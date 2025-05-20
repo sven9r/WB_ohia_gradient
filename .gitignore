@@ -3,4 +3,8 @@
 .RData
 .Ruserdata
 .DS_Store
+<<<<<<< HEAD
 output/test_phylo
+=======
+output/test_phylo
+>>>>>>> 1ff4bc0 (Initial commit + update on scripts)
