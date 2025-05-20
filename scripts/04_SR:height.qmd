@@ -1,0 +1,81 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+---
+
+
+```{r}
+source(here::here("scripts/00_source.R"))
+```
+
+
+```{r}
+#species richness on Oahu across elevations
+
+sr_hight <- 
+  meta_data %>%
+  filter(island == "Oahu") |>
+  filter(commonname == "ʻōhiʻa Lehua") |>
+  ggplot(aes(x = elevation, y = richness, color = sample_site, shape = elevation)) +
+  geom_jitter(width = 0.2) +
+  theme_minimal() +
+  labs(title = "Species Richness across all ‘Ōhi‘a samples from O‘ahu\nGrouped by elevation",
+       x = "Elevation", 
+       y = "Species Richness") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+sr_hight_site_reg <- 
+  meta_data %>%
+  filter(island == "Oahu") |>
+  filter(commonname == "ʻōhiʻa Lehua") |>
+  ggplot(aes(x = factor(elevation, levels =
+                             c("low", "mid", "high")), y = richness, color = sample_site, shape = elevation, group = sample_site)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", se = FALSE) +
+  theme_minimal() +
+  labs(title = "Species Richness across all ‘Ōhi‘a samples from O‘ahu\nGrouped by elevation",
+       x = "Elevation", 
+       y = "Species Richness") +
+  facet_wrap(~sample_site) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+sr_hightft_reg <- 
+  meta_data %>%
+  filter(island == "Oahu") |>
+  filter(commonname == "ʻōhiʻa Lehua") |>
+  filter(sample_id != "KT1") |> 
+  filter(sample_id != "KA5") |> 
+  drop_na(elevation) |>
+  mutate(elev_arrow = case_when(
+    elevation == "high" ~ "\u25B2",  # ▲
+    elevation == "mid"  ~ "\u25A0",  # ■
+    elevation == "low"  ~ "\u25BC"   # ▼
+  )) |> 
+  mutate(elevation_m = as.numeric(elevation_ft)/3.28) |>
+  ggplot() +
+  geom_text(aes(x = elevation_m, y = richness, 
+             color = sample_site, label = elev_arrow)) +
+  geom_smooth(aes(x = elevation_m, y = richness,
+                  color = sample_site), method = "lm", se = F) +
+  geom_smooth(aes(x = elevation_m, y = richness), method = "lm", se = T) +
+  scale_color_npg() +
+  scale_fill_npg() +
+  labs(title = "Species Richness across all ‘Ōhi‘a samples from O‘ahu\nGrouped and colored by Ridge",
+       x = "Elevation", 
+       y = "Species Richness") +
+  theme_classic() 
+```
+
+```{r}
+#save this to png and svg file with dynamic date with paste0
+
+ggsave(here::here("figures", paste0("species_richness_elevation_", Sys.Date(), ".png")), 
+       plot = sr_hightft_reg, 
+       device = "png", 
+       width = 10, height = 8, dpi = 300)
+```
+
+```

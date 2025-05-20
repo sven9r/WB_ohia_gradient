@@ -1,0 +1,6 @@
+"0","write.csv(df_final, here::here(""data/output/NIClassify_all.csv""))
+"
+"2","Warning: cannot open file '/Users/svenweber/Desktop/Berkeley/2025_03_ohia_gradient/data/output/NIClassify_all.csv': No such file or directory"
+"2","Error in file(file, ifelse(append, ""a"", ""w"")) : 
+  cannot open the connection
+"

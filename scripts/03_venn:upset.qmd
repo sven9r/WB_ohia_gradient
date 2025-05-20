@@ -1,0 +1,150 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+---
+
+```{r}
+source(here::here("scripts/00_source.R"))
+```
+
+Lekes transect
+```{r}
+# Filter to Oʻahu samples
+meta_leke <- meta_data |> 
+  filter(tolower(island) == "oahu") |> 
+  select(sample_id, sample_site, shortname) |> 
+   filter(str_detect(sample_id, "O_|K_|G_")) 
+
+# Merge with ZOTU table
+zotu_long <- zotu_df |> 
+  inner_join(meta_leke, by = "sample_id") |> 
+  pivot_longer(cols = starts_with("zotu"), names_to = "zotu", values_to = "count") |> 
+  mutate(present = count > 0) 
+
+# Create presence/absence per ridge
+zotu_presence <- zotu_long |> 
+  filter(present) |> 
+  distinct(zotu, shortname) |> 
+  mutate(value = TRUE) |> 
+  pivot_wider(names_from = shortname, values_from = value, values_fill = FALSE)
+
+# Plot shared/unique ZOTUs as UpSet plot
+upset(zotu_presence,
+      intersect = colnames(zotu_presence)[-1],
+      name = "Shared ZOTUs",
+      base_annotations = list('Intersection size' = intersection_size()),
+      width_ratio = 0.15) +
+  ggtitle("Shared and Unique zOTUs of three different tree species")
+```
+
+All ohia across all five ridges
+```{r}
+# Filter to Oʻahu samples
+meta_oahu <- meta_data |> 
+  filter(tolower(island) == "oahu") |> 
+  select(sample_id, sample_site, shortname) |> 
+  filter(shortname == "Ohia") |> 
+  filter(sample_id != "KT1") |>
+  filter(sample_id != "KA5") 
+
+# Merge with ZOTU table
+zotu_long <- zotu_df |> 
+  inner_join(meta_oahu, by = "sample_id") |> 
+  pivot_longer(cols = starts_with("zotu"), names_to = "zotu", values_to = "count") |> 
+  mutate(present = count > 0) 
+
+# Create presence/absence per ridge
+zotu_presence <- zotu_long |> 
+  filter(present) |> 
+  distinct(zotu, sample_site) |> 
+  mutate(value = TRUE) |> 
+  pivot_wider(names_from = sample_site, values_from = value, values_fill = FALSE)
+
+# Plot shared/unique ZOTUs as UpSet plot
+upset(zotu_presence,
+      intersect = colnames(zotu_presence)[-1],
+      name = "Shared ZOTUs",
+      base_annotations = list('Intersection size' = intersection_size()),
+      width_ratio = 0.15) +
+  ggtitle("Shared and Unique ZOTUs Across Oʻahu Ridges")
+
+```
+
+```{r}
+
+# Merge ZOTU table to taxonomy
+# Assuming taxonomy_df has a column named "zotu" and "species" or similar
+taxonomy_long <- taxonomy_df |> 
+  select(zotu_id, species = species) |> 
+  # fallback to zotu if species is missing
+  mutate(species = ifelse(is.na(species) | species == "", zotu_id, species)) |> 
+  mutate(zotu_id = tolower(zotu_id))
+
+zotu_long <- zotu_df |> 
+  pivot_longer(cols = -sample_id, names_to = "zotu_id", values_to = "count") |> 
+  inner_join(meta_oahu, by = "sample_id") |> 
+  inner_join(taxonomy_long, by = "zotu_id") |> 
+  filter(count > 0)
+
+# Use species name instead of ZOTU ID
+species_presence <- zotu_long |> 
+  distinct(species, sample_site) |> 
+  mutate(present = TRUE) |> 
+  pivot_wider(names_from = sample_site, values_from = present, values_fill = FALSE)
+
+all_ridges = species_presence |> 
+  filter(if_all(-species, ~ .x == TRUE))
+  
+
+# Plot UpSet
+upset(species_presence,
+      intersect = colnames(species_presence)[-1],
+      name = "Shared Species",
+      base_annotations = list('Intersection size' = intersection_size()),
+      width_ratio = 0.15) +
+  ggtitle("Shared and Unique Species Across Oʻahu Ridges")
+
+```
+
+```{r}
+# Merge ZOTU table to taxonomy
+# Assuming taxonomy_df has a column named "zotu" and "species" or similar
+taxonomy_long <- taxonomy_df |> 
+  select(zotu_id, genus = genus) |> 
+  # fallback to zotu if species is missing
+  mutate(genus = ifelse(is.na(genus) | genus == "", "Nan", genus)) |> 
+  mutate(zotu_id = tolower(zotu_id)) |> 
+  filter(genus != "Nan")
+
+zotu_long <- zotu_df |> 
+  pivot_longer(cols = -sample_id, names_to = "zotu_id", values_to = "count") |> 
+  inner_join(meta_oahu, by = "sample_id") |> 
+  inner_join(taxonomy_long, by = "zotu_id") |> 
+  filter(count > 0)
+
+# Use species name instead of ZOTU ID
+species_presence <- zotu_long |> 
+  distinct(genus, sample_site) |> 
+  mutate(present = TRUE) |> 
+  pivot_wider(names_from = sample_site, values_from = present, values_fill = FALSE)
+
+all_ridges = species_presence |> 
+  filter(if_all(-genus, ~ .x == TRUE))
+
+four_ridges <- species_presence |>
+  filter(rowSums(across(-genus, ~ .x == TRUE)) == 4)
+
+
+write.csv(species_presence, here::here("output/genera_invasion_status.csv"))
+
+#load(here::here("output/genera_invasion_status_fixed.csv"))
+
+# Plot UpSet
+upset(species_presence,
+      intersect = colnames(species_presence)[-1],
+      name = "Shared Genera",
+      base_annotations = list('Intersection size' = intersection_size()),
+      width_ratio = 0.15) +
+  ggtitle("Shared and Unique Genera Across Oʻahu Ridges")
+```
