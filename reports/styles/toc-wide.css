@@ -1,0 +1,18 @@
+/* widen the right-hand ToC column */
+.quarto-sidebar-secondary {
+  flex: 0 0 380px;     /* default ~300px */
+  max-width: 380px;
+}
+
+/* let long headings wrap nicely */
+.quarto-sidebar-secondary .toc .nav-link {
+  white-space: normal;
+  line-height: 1.2;
+}
+
+/* keep main content from getting cramped */
+@media (min-width: 992px) {
+  .content {
+    max-width: calc(100% - 380px - var(--quarto-doc-sidebar-width, 250px));
+  }
+}

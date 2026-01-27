@@ -1,10 +1,13 @@
-# Load necessary libraries
-libs <- c("tidyverse","openxlsx","janitor", "vegan", "ggtext", 
+#libraries
+libs <- c("openxlsx","janitor", "vegan", "ggtext", 
           "RColorBrewer","glue", "here", "ggimage", "scales", 
           "viridis","Biostrings", "ape", "phangorn", "parallel",
            "lme4", "patchwork", "ggsci", "ggvenn", "rgbif",
           "adespatial", "betapart", "geosphere", "ComplexUpset",
-          "seqinr")
+          "seqinr", "gt", "emmeans", "sf", "rnaturalearth" ,"rnaturalearthdata",
+          "ggspatial", "ggrepel", "ggnewscale", "elevatr", "raster","ggsci", "ggpubr",
+          "tidyverse")
+
 
 # Install missing libraries
 installed_libs <- libs %in% rownames(installed.packages())
@@ -17,6 +20,14 @@ invisible(lapply(libs, library, character.only = T))
 
 rm(installed_libs)
 rm(libs)
+
+# # Only resolve the conflicts you care about
+# #conflicts
+# library(conflicted)
+# conflict_prefer("filter", "dplyr")
+# conflict_prefer("select", "dplyr")
+# conflict_prefer("as.data.frame", "base")
+
 
 # Load the metadata
 meta_data <- openxlsx::read.xlsx(here::here("data/ohia_gradient_2025-03-25_91.xlsx"), sheet = "metadata") |> 
@@ -45,7 +56,9 @@ meta_data <- openxlsx::read.xlsx(here::here("data/ohia_gradient_2025-03-25_91.xl
   ),.before = sample_id_short) |> 
   dplyr::select(-sample_id_short, -elev_num) |> 
   dplyr::rename(sample_id_short = sample_id_short_new) |>
-  dplyr::select(sample_id, sample_id_short, everything())
+  dplyr::select(sample_id, sample_id_short, everything()) |> 
+  #calculate elevation_m instead of ft for publication
+  mutate(elevation_m = elevation_ft * 0.3048) 
 
 meta_data_id <- meta_data |>
   select(sample_id, sample_id_short) |> 

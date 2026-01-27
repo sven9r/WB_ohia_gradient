@@ -1,0 +1,621 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+output-dir: reports
+---
+
+```{r}
+source(here::here("scripts/00_source.R"))
+```
+
+```{r}
+#import NIClassifier prediction about native and invasive status of our zotus
+
+status <- read.csv(here::here("NIClassify/06_NIClassify_predict.csv")) |> 
+  janitor::clean_names() |> 
+  dplyr::rename(zotu_id = upid) |> 
+  filter(str_detect(zotu_id, "Zotu")) |> 
+  select(zotu_id, status_final = final_status, status_ni = predict) |> 
+  left_join(
+    #import blast maps about native and invasive status of our zotus
+  read.xlsx(here::here("output/tax_invasive.xlsx")) |> 
+  janitor::clean_names() |>
+  select(zotu_id, status_genus)) |> 
+  dplyr::rename(ibis_status = status_final) |> 
+  #turn blank values into NA
+  mutate(across(c(ibis_status, status_ni, status_genus), 
+                ~ ifelse(.x == "", NA_character_, .x))) |> 
+  mutate(Ibis  = tolower(ibis_status), 
+         NiClassify = tolower(status_ni), 
+         Blast = tolower(status_genus),
+         zotu_id = tolower(zotu_id)) |> 
+  select(-contains("status"))
+
+summary_stats <- status |> 
+  #calculate % introduces vs native vs NA for each method 
+  #first pivot longer
+  pivot_longer(cols = c(Ibis, NiClassify, Blast), 
+               names_to = "method", values_to = "status") |>
+  group_by(method, status) |>
+  summarise(count = n(), .groups = "drop") |> 
+  #pivot wider for nicer table
+  pivot_wider(names_from = status, values_from = count, values_fill = 0) |> 
+  dplyr::rename("No information available" = "NA")
+
+#use gt table to produce a nice table for the publication
+summary_stats |> 
+  gt() |> 
+  tab_header(title = "Summary of Invasive Status Predictions") |> 
+  cols_label(method = "Prediction Method") |> 
+  fmt_number(columns = everything(), decimals = 0) |> 
+  cols_width(everything() ~ px(150)) |> 
+  tab_spanner(label = "Invasive Status", columns = c("introduced", "native", "No information available")) |> 
+  tab_source_note(source_note = "Data obtained through Ibis geolocation API, NIClassify predictions, BLAST mapping and species lookup") |> 
+  gtsave(here::here("output/invasive_status_summary.html"))
+```
+
+
+Lekes transect
+```{r}
+# Filter to Oʻahu samples
+meta_leke <- meta_data |> 
+  filter(tolower(island) == "oahu") |> 
+  select(sample_id, sample_site, shortname) |> 
+   filter(str_detect(sample_id, "O_|K_|G_")) 
+
+# Merge with ZOTU table
+zotu_long <- zotu_df |> 
+  inner_join(meta_leke, by = "sample_id") |> 
+  pivot_longer(cols = starts_with("zotu"), names_to = "zotu", values_to = "count") |> 
+  mutate(present = count > 0) 
+
+# Create presence/absence per ridge
+zotu_presence <- zotu_long |> 
+  filter(present) |> 
+  distinct(zotu, shortname) |> 
+  mutate(value = TRUE) |> 
+  pivot_wider(names_from = shortname, values_from = value, values_fill = FALSE) |> 
+  #left join status table to get invasion status
+  left_join(status, by = c("zotu" = "zotu_id")) 
+
+#create two upset plots, one with colored bars from the Blast column and one with NIClassify
+
+
+
+# Plot shared/unique ZOTUs as UpSet plot
+blast_leke <- upset(zotu_presence,
+         intersect = colnames(zotu_presence)[grepl("Koa|Ohia|Guava", colnames(zotu_presence))],
+      name = "Shared ZOTUs",
+      base_annotations = list(
+    'Intersection size' = intersection_size(aes(fill = Blast))),
+      width_ratio = 0.15) +
+  scale_fill_brewer(palette = "Set2", na.value = "grey70") +
+  ggtitle("Shared and Unique zOTUs of three different tree species")
+
+
+ni_leke <- upset(zotu_presence,
+         intersect = colnames(zotu_presence)[grepl("Koa|Ohia|Guava", colnames(zotu_presence))],
+      name = "Shared ZOTUs",
+      base_annotations = list(
+    'Intersection size' = intersection_size(aes(fill = NiClassify))),
+      width_ratio = 0.15) +
+  scale_fill_brewer(palette = "Set2", na.value = "grey70") +
+  ggtitle("Shared and Unique zOTUs of three different tree species")
+
+
+wrap_plots(blast_leke, ni_leke, ncol = 2)
+
+#upset plot to see differences between the different trees
+
+
+```
+
+All ohia across all five ridges
+```{r}
+# Filter to Oʻahu samples
+meta_oahu <- meta_data |> 
+  filter(tolower(island) == "oahu") |> 
+  select(sample_id, sample_site, shortname) |> 
+  filter(shortname == "Ohia") |> 
+  filter(sample_id != "KT1") |>
+  filter(sample_id != "KA5") 
+
+# Merge with ZOTU table
+zotu_long <- zotu_df |> 
+  inner_join(meta_oahu, by = "sample_id") |> 
+  pivot_longer(cols = starts_with("zotu"), names_to = "zotu", values_to = "count") |> 
+  mutate(present = count > 0) 
+
+# Create presence/absence per ridge
+zotu_presence <- zotu_long |> 
+  filter(present) |> 
+  distinct(zotu, sample_site) |> 
+  mutate(value = TRUE) |> 
+  pivot_wider(names_from = sample_site, values_from = value, values_fill = FALSE) |> 
+   left_join(status, by = c("zotu" = "zotu_id")) 
+
+# Plot shared/unique ZOTUs as UpSet plot
+upset(zotu_presence,
+       intersect = c("Kaala", "Karl's Track", "Poamoho", "ʻAiea Ridge", "Manana Ridge"),
+      name = "Shared ZOTUs",
+      base_annotations = list(
+    'Intersection size' = intersection_size(aes(fill = NiClassify))),
+      width_ratio = 0.15) +
+  scale_fill_brewer(palette = "Set2", na.value = "grey70")
+
+```
+
+```{r}
+
+# Merge ZOTU table to taxonomy
+# Assuming taxonomy_df has a column named "zotu" and "species" or similar
+taxonomy_long <- taxonomy_df |> 
+  select(zotu_id, species = species) |> 
+  # fallback to zotu if species is missing
+  mutate(species = ifelse(is.na(species) | species == "", zotu_id, species)) |> 
+  mutate(zotu_id = tolower(zotu_id))
+
+zotu_long <- zotu_df |> 
+  pivot_longer(cols = -sample_id, names_to = "zotu_id", values_to = "count") |> 
+  inner_join(meta_oahu, by = "sample_id") |> 
+  inner_join(taxonomy_long, by = "zotu_id") |> 
+  filter(count > 0)
+
+# Use species name instead of ZOTU ID
+species_presence <- zotu_long |> 
+  distinct(species, sample_site) |> 
+  mutate(present = TRUE) |> 
+  pivot_wider(names_from = sample_site, values_from = present, values_fill = FALSE)
+
+all_ridges = species_presence |> 
+  filter(if_all(-species, ~ .x == TRUE))
+  
+
+# Plot UpSet
+upset(species_presence,
+      intersect = colnames(species_presence)[-1],
+      name = "Shared Species",
+      base_annotations = list('Intersection size' = intersection_size()),
+      width_ratio = 0.15) +
+  ggtitle("Shared and Unique Species Across Oʻahu Ridges")
+
+```
+
+```{r}
+# Merge ZOTU table to taxonomy
+# Assuming taxonomy_df has a column named "zotu" and "species" or similar
+taxonomy_long <- taxonomy_df |> 
+  select(zotu_id, genus = genus) |> 
+  # fallback to zotu if species is missing
+  mutate(genus = ifelse(is.na(genus) | genus == "", "Nan", genus)) |> 
+  mutate(zotu_id = tolower(zotu_id)) |> 
+  filter(genus != "Nan")
+
+zotu_long <- zotu_df |> 
+  pivot_longer(cols = -sample_id, names_to = "zotu_id", values_to = "count") |> 
+  inner_join(meta_oahu, by = "sample_id") |> 
+  inner_join(taxonomy_long, by = "zotu_id") |> 
+  filter(count > 0)
+
+# Use species name instead of ZOTU ID
+species_presence <- zotu_long |> 
+  distinct(genus, sample_site) |> 
+  mutate(present = TRUE) |> 
+  pivot_wider(names_from = sample_site, values_from = present, values_fill = FALSE)
+
+all_ridges = species_presence |> 
+  filter(if_all(-genus, ~ .x == TRUE))
+
+four_ridges <- species_presence |>
+  filter(rowSums(across(-genus, ~ .x == TRUE)) == 4)
+
+
+#write.csv(species_presence, here::here("output/genera_invasion_status.csv"))
+
+#load(here::here("output/genera_invasion_status_fixed.csv"))
+
+# Plot UpSet
+upset(species_presence,
+      intersect = colnames(species_presence)[-1],
+      name = "Shared Genera",
+      base_annotations = list('Intersection size' = intersection_size()),
+      width_ratio = 0.15) +
+  ggtitle("Shared and Unique Genera Across Oʻahu Ridges")
+```
+
+
+```{r}
+
+# 1) Re-filter to your five Ohia ridges (dropping KT1 & KA5)
+ohia_samples <- meta_data %>%
+  filter(
+    shortname   == "Ohia",
+    sample_site %in% c("Kaala","Karl's Track","Poamoho","ʻAiea Ridge","Manana Ridge"),
+    !sample_id  %in% c("KT1","KA5")
+  ) %>%
+  select(sample_id)
+
+# 2) Build a long table of presences and join in NiClassify + elevation
+plot_meta <- zotu_df %>%
+  semi_join(ohia_samples, by = "sample_id") %>%     # keep only those samples
+  pivot_longer(-sample_id, names_to="zotu", values_to="count") %>%
+  filter(count > 0) %>%                             # presences only
+  distinct(sample_id, zotu) %>%                     # one row per sample–zotu
+  left_join(status   %>% select(zotu_id, NiClassify),
+            by = c("zotu" = "zotu_id")) %>%
+  left_join(meta_data %>% select(sample_id, sample_site, elevation),
+            by = "sample_id") %>%
+  mutate(
+    NiClassify = factor(if_else(NiClassify=="introduced","introduced","native"),
+                        levels=c("native","introduced")),
+    elevation  = factor(elevation, levels=c("low","mid","high"))
+  ) |> 
+  drop_na(NiClassify)
+
+# 3) Summarize: count unique zOTUs per ridge × elevation × status, then % within each bar
+elev_ridge_df <- plot_meta %>%
+  group_by(sample_site, elevation, NiClassify) %>%
+  summarise(zotus = n_distinct(zotu), .groups="drop") %>%
+  group_by(sample_site, elevation) %>%
+  mutate(pct = zotus / sum(zotus)) %>%
+  ungroup()
+
+# 4) Plot: 5 facets (one per ridge), each with 3 bars (low/mid/high),
+#    stacked by native vs introduced
+ggplot(elev_ridge_df, aes(x = elevation, y = pct, fill = NiClassify)) +
+  geom_col() +
+  facet_wrap(~ sample_site, nrow = 1) +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(
+    values = c(native = "#377EB8", introduced = "#E41A1C"),
+    name   = "Status"
+  ) +
+  labs(
+    x     = "Elevation",
+    y     = "Percent of zOTUs",
+    title = "Native vs. Introduced zOTUs at Low / Mid / High on Each Ridge"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 25, hjust = 1),
+    strip.text  = element_text(face = "bold")
+  )
+```
+```{r}
+# 1) Define your five Oʻahu Ohia ridges, dropping KT1 & KA5
+ridges <- c("Kaala","Karl's Track","Poamoho","ʻAiea Ridge","Manana Ridge")
+
+ohia_meta <- meta_data %>%
+  filter(
+    shortname   == "Ohia",
+    sample_site %in% ridges,
+    !sample_id  %in% c("KT1","KA5")
+  )
+
+# 2) Compute the tercile breaks on just these elevations
+breaks <- quantile(
+  ohia_meta$elevation_ft,
+  probs   = c(0, 1/3, 2/3, 1),
+  na.rm   = TRUE
+)
+
+# 3) Add an 'elev_band' factor (low/mid/high) to that subset
+ohia_meta <- ohia_meta %>%
+  mutate(
+    elev_band = cut(
+      elevation_ft,
+      breaks         = breaks,
+      include.lowest = TRUE,
+      labels         = c("low","mid","high")
+    )
+  )
+
+# Quick counts to see your sample distribution:
+ohia_meta %>%
+  dplyr::count(sample_site, elev_band) %>%
+  pivot_wider(names_from = elev_band, values_from = n, values_fill = 0)
+
+# 4) Now rerun your zOTU pipeline, joining in elev_band instead of the old 'elevation'
+plot_meta <- zotu_df %>%
+  semi_join(ohia_meta, by = "sample_id") %>%     # only those Ohia samples
+  pivot_longer(-sample_id, names_to="zotu", values_to="count") %>%
+  filter(count > 0) %>%
+  distinct(sample_id, zotu) %>%
+  left_join(status   %>% select(zotu_id, NiClassify),
+            by = c("zotu" = "zotu_id")) %>%
+  left_join(ohia_meta %>% select(sample_id, sample_site, elev_band),
+            by = "sample_id") %>%
+  mutate(
+    NiClassify = factor(if_else(NiClassify=="introduced","introduced","native"),
+                        levels = c("native","introduced")),
+    elev_band  = factor(elev_band, levels = c("low","mid","high"))
+  ) %>%
+  drop_na(NiClassify)
+
+# 5) Summarise and plot exactly as before, but by elev_band
+elev_df <- plot_meta %>%
+  group_by(sample_site, elev_band, NiClassify) %>%
+  summarise(zotus = n_distinct(zotu), .groups = "drop") %>%
+  group_by(sample_site, elev_band) %>%
+  mutate(pct = zotus / sum(zotus)) %>%
+  ungroup()
+
+ggplot(elev_df, aes(x = elev_band, y = pct, fill = NiClassify)) +
+  geom_col() +
+  facet_wrap(~ sample_site, nrow = 1) +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(
+    values = c(native = "#377EB8", introduced = "#E41A1C"),
+    name   = "Status"
+  ) +
+  labs(
+    x     = "Elevation band",
+    y     = "Percent of zOTUs",
+    title = "Native vs. Introduced zOTUs Across Elevation Bands on Each Ridge"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 25, hjust = 1),
+    strip.text  = element_text(face = "bold")
+  )
+```
+```{r}
+
+# 1) Filter to your five Ohia ridges (drop KT1 & KA5)
+ridges <- c("Kaala","Karl's Track","Poamoho","ʻAiea Ridge","Manana Ridge")
+ohia_meta <- meta_data %>%
+  filter(
+    shortname   == "Ohia",
+    sample_site %in% ridges,
+    !sample_id  %in% c("KT1","KA5")
+  )
+
+# 2) Compute tercile breaks on those elevations
+breaks <- quantile(
+  ohia_meta$elevation_ft,
+  probs   = c(0, 1/3, 2/3, 1),
+  na.rm   = TRUE
+)
+
+# 3) Bin into low/mid/high
+ohia_meta <- ohia_meta %>%
+  mutate(
+    elev_band = cut(
+      elevation_ft,
+      breaks         = breaks,
+      include.lowest = TRUE,
+      labels         = c("low","mid","high")
+    )
+  )
+
+# 4) How many samples per ridge × band?
+sample_counts <- dplyr::count(
+  ohia_meta,
+  sample_site, elev_band,
+  name = "sample_n"
+)
+
+# 5) Pivot zOTU table, keep presences, join status + band
+plot_meta <- zotu_df %>%
+  semi_join(ohia_meta, by = "sample_id") %>%
+  pivot_longer(-sample_id, names_to="zotu", values_to="count") %>%
+  filter(count > 0) %>%
+  distinct(sample_id, zotu) %>%
+  left_join(
+    status    %>% select(zotu_id, NiClassify),
+    by = c("zotu" = "zotu_id")
+  ) %>%
+  left_join(
+    ohia_meta %>% select(sample_id, sample_site, elev_band),
+    by = "sample_id"
+  ) %>%
+  mutate(
+    NiClassify = factor(
+      if_else(NiClassify=="introduced","introduced","native"),
+      levels = c("native","introduced")
+    )
+  )
+
+# 6) Count zOTUs per ridge×band×status
+zotu_counts <- plot_meta %>%
+  group_by(sample_site, elev_band, NiClassify) %>%
+  summarise(zotus = n_distinct(zotu), .groups="drop")
+
+# 7) Merge in sample_n, compute pct, build x_label
+summary_df <- zotu_counts %>%
+  drop_na(NiClassify) %>%
+  left_join(sample_counts, by = c("sample_site","elev_band")) %>%
+  group_by(sample_site, elev_band) %>%
+  mutate(pct = zotus / sum(zotus)) %>%
+  ungroup() %>%
+  mutate(
+    # shorten "Aiea Ridge" → "Aiea"
+    ridge_short = str_replace(sample_site, " Ridge$", ""),
+    x_label     = paste0(ridge_short, " ", elev_band, " (n=", sample_n, ")")
+  )
+
+# 8) Explicitly order x‐axis: ridges in your order, bands low→mid→high
+x_levels <- summary_df %>%
+  distinct(sample_site, elev_band, x_label, sample_n) %>%
+  arrange(
+    factor(sample_site, levels = ridges),
+    factor(elev_band,  levels = c("low","mid","high"))
+  ) %>%
+  pull(x_label)
+
+summary_df <- summary_df %>%
+  mutate(x_label = factor(x_label, levels = x_levels))
+
+# 9) Plot
+ggplot(summary_df, aes(x = x_label, y = pct, fill = NiClassify)) +
+  geom_col() +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(
+    values = c(native = "#377EB8", introduced = "#E41A1C"),
+    name   = "Status"
+  ) +
+  labs(
+    x       = NULL,
+    y       = "Percent of zOTUs",
+    title   = "Native vs. Introduced zOTUs by Ridge & Elevation Band",
+    caption = paste0(
+      "Elevation bands on Ohia samples (feet):\n",
+      "low  = ", round(breaks[1]), "–", round(breaks[2]), " ft; ",
+      "mid  = ", round(breaks[2]), "–", round(breaks[3]), " ft; ",
+      "high = ", round(breaks[3]), "–", round(breaks[4]), " ft"
+    )
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x    = element_text(angle = 45, hjust = 1),
+    panel.grid.minor.x = element_blank(),
+    plot.caption   = element_text(hjust = 0)
+  )
+```
+```{r}
+# 1) Build the per‐sample data with elev_band exactly as before:
+ridges <- c("Kaala","Karl's Track","Poamoho","ʻAiea Ridge","Manana Ridge")
+ohia_meta <- meta_data %>%
+  filter(shortname=="Ohia",
+         sample_site %in% ridges,
+         !sample_id %in% c("KT1","KA5")) %>%
+  select(sample_id, sample_site, elevation_ft)
+
+# tercile breaks
+breaks <- quantile(ohia_meta$elevation_ft, probs = c(0,1/3,2/3,1), na.rm = TRUE)
+ohia_meta <- ohia_meta %>%
+  mutate(elev_band = cut(elevation_ft, breaks, labels = c("low","mid","high"), 
+                         include.lowest=TRUE))
+
+# long format + join
+long_occ <- zotu_df %>%
+  semi_join(ohia_meta, by="sample_id") %>%
+  pivot_longer(-sample_id, names_to="zotu", values_to="count") %>%
+  filter(count>0) %>%
+  distinct(sample_id, zotu) %>%
+  left_join(status    %>% select(zotu_id, NiClassify),
+            by = c("zotu"="zotu_id")) %>%
+  left_join(ohia_meta %>% select(sample_id, sample_site, elev_band),
+            by = "sample_id") %>%
+  mutate(NiClassify = if_else(NiClassify=="introduced","introduced","native"))
+
+# per‐sample successes/failures
+inv_by_sample <- long_occ %>%
+  group_by(sample_site, sample_id, elev_band) %>%
+  summarise(
+    introduced = sum(NiClassify=="introduced"),
+    native     = sum(NiClassify=="native"),
+    .groups    = "drop"
+  )
+
+# 2) Fit a GEE with sample_site as the “cluster” 
+inv_by_sample <- inv_by_sample %>%
+  mutate(ridge_id = as.numeric(factor(sample_site)))
+
+gee2 <- geepack ::geeglm(
+  cbind(introduced, native) ~ elev_band,
+  id       = ridge_id,
+  data     = inv_by_sample,
+  family   = binomial,
+  corstr   = "exchangeable"
+)
+summary(gee2)
+
+
+
+
+gee_trend <- geepack::geeglm(
+  cbind(introduced, native) ~ as.numeric(elev_band),
+  id    = ridge_id,
+  data  = inv_by_sample,
+  family = binomial,
+  corstr = "exchangeable"
+)
+summary(gee_trend)
+
+
+
+```
+
+```{r}
+
+# 1) Re-compute per-sample proportions (introduced out of all classified+unclassified)
+prop_df <- zotu_df %>%
+  pivot_longer(-sample_id, names_to="zotu", values_to="count") %>%
+  filter(count > 0) %>%
+  distinct(sample_id, zotu) %>%
+  left_join(
+    meta_data %>% select(sample_id, sample_site, shortname),
+    by = "sample_id"
+  ) %>%
+  filter(
+    sample_site %in% c("ʻAiea Ridge","Manana Ridge"),
+    shortname   %in% c("Ohia","Koa","Guava")
+  ) %>%
+  left_join(
+    status %>% select(zotu_id, NiClassify) %>% rename(zotu = zotu_id),
+    by = "zotu"
+  ) %>%
+  mutate(
+    NiClassify = coalesce(NiClassify, "unclassified"),
+    NiClassify = factor(NiClassify, levels=c("native","introduced","unclassified"))
+  ) %>%
+  count(sample_id, sample_site, shortname, NiClassify) %>%
+  group_by(sample_id) %>%
+  mutate(total = sum(n)) %>%
+  ungroup() %>%
+  filter(NiClassify=="introduced") %>%
+  transmute(
+    sample_id,
+    sample_site,
+    tree        = recode(shortname,
+                         "Ohia"  = "ʻōhiʻa Lehua",
+                         "Koa"   = "koa",
+                         "Guava" = "strawberry guava"),
+    prop_intro = n / total
+  )
+
+# 2) Define the 3 pair-wise comparisons
+comparisons <- list(
+  c("ʻōhiʻa Lehua","koa"),
+  c("ʻōhiʻa Lehua","strawberry guava"),
+  c("koa","strawberry guava")
+)
+
+# 3) Build the bar + SE plot with significance stars
+ggplot(prop_df, aes(x = tree, y = prop_intro, fill = tree)) +
+  geom_bar(stat="summary", fun="mean", width=0.7) +
+  geom_errorbar(stat="summary", fun.data=mean_se, width=0.2) +
+  facet_wrap(~ sample_site, nrow = 1) +
+  scale_y_continuous(
+    labels = percent_format(accuracy=1),
+    limits = c(0,1), breaks = seq(0,1,0.2), expand = c(0,0)
+  ) +
+  scale_fill_manual(values = plant_colors) +
+  stat_compare_means(
+    aes(label = ..p.signif..),
+    method           = "t.test",
+    comparisons      = comparisons,
+    p.adjust.method  = "holm",
+    hide.ns          = FALSE,
+    tip.length       = 0.01
+  ) +
+  labs(
+    x        = "Tree species",
+    y        = "Mean % introduced zOTUs ± SE",
+    title    = "Invasion rate by Tree species at ʻAiea & Manana Ridges",
+    subtitle = "Holm-adjusted pairwise t-tests (α=0.05)",
+    fill     = "Tree"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x    = element_text(angle = 25, hjust = 1),
+    legend.position= "none",
+    strip.text     = element_text(face = "bold")
+  )
+```
+
+
+
+

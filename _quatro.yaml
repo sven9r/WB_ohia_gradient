@@ -1,0 +1,24 @@
+project:
+  type: book
+  output-dir: _site
+
+book:
+  title: "Oʻahu ʻŌhiʻa Gradient — Full Report"
+  chapters:
+    - reports/index.qmd
+    - scripts/02_initial_analyses_final.qmd
+    - scripts/03_overlap_and_invasion.qmd
+    - scripts/04_SR_height.qmd
+    - scripts/05_titan2.qmd
+
+format:
+  html:
+    toc: true
+    number-sections: true
+
+execute:
+  echo: false
+  warning: false
+  message: false
+  freeze: auto
+  execute-dir: project
