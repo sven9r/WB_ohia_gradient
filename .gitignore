@@ -4,5 +4,7 @@
 .Ruserdata
 .DS_Store
 output/test_phylo
+figures
+data/jun_raw_data
 
 /.quarto/
