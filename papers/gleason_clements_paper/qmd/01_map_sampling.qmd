@@ -1,0 +1,183 @@
+---
+format: html
+editor: visual
+---
+
+```{r, include=FALSE}
+source(here::here("papers","gleason_clements_paper","R","00_source.R"))
+```
+
+# 🌍 Plot 1: Sample Design and map {#map}
+
+```{r map_setup, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Convert and enrich points
+ohia_points <- meta_data %>%
+  filter(shortname == "Ohia", island == "Oahu") %>%
+  filter(!is.na(coord_x) & !is.na(coord_y)) %>%
+  mutate(
+    lon = coord_y,
+    lat = coord_x,
+    elevation_m = elevation_ft * 0.3048
+  )
+
+# Convert to sf points
+ohia_sf <- ohia_points %>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326)
+
+# Build ridge tracks
+ridge_lines <- ohia_points %>%
+  arrange(sample_site, elevation_m) %>%
+  sf::st_drop_geometry() %>%
+  group_split(sample_site) %>%
+  map(~ {
+    coords <- dplyr::select(.x, lon, lat) %>% as.matrix()
+    st_linestring(coords)
+  })
+
+ridge_groups <- ohia_points %>%
+  arrange(sample_site, elevation_m) %>%
+  sf::st_drop_geometry() %>%
+  group_split(sample_site)
+
+ridge_names <- ohia_points %>%
+  arrange(sample_site, elevation_m) %>%
+  pull(sample_site) %>%
+  raster::unique()
+
+ridge_lines <- ridge_groups %>%
+  map(~ {
+    coords <- dplyr::select(.x, lon, lat) %>% as.matrix()
+    st_linestring(coords)
+  })
+
+ohia_tracks <- st_sf(
+  sample_site = ridge_names,
+  geometry = st_sfc(ridge_lines),
+  crs = 4326
+)
+
+# Start and end elevation labels
+elev_labels <- ohia_points %>%
+  group_by(sample_site) %>%
+  filter(elevation_m == min(elevation_m) | elevation_m == max(elevation_m)) %>%
+  mutate(label = paste0(round(elevation_m), " m")) %>%
+  ungroup() %>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326)
+
+# Load Hawaiʻi outline
+hawaii_outline <- ne_states(country = "United States of America", returnclass = "sf") %>%
+  filter(name == "Hawaii")
+
+# Use bounding box from the island outline directly and buffer it
+bbox_raw <- st_bbox(hawaii_outline)
+bbox_raw[c("xmin", "ymin")] <- bbox_raw[c("xmin", "ymin")] - 0.1
+bbox_raw[c("xmax", "ymax")] <- bbox_raw[c("xmax", "ymax")] + 0.1
+bbox_sf <- st_as_sf(st_as_sfc(bbox_raw))
+
+
+# Define paths
+elev_path    <- file.path(legacy_output, "oahu_elevation_z10.tif")
+clipped_path <- file.path(legacy_output, "oahu_elevation_clipped.tif")
+
+# Load clipped raster if it exists
+if (file.exists(clipped_path)) {
+  elev_clipped <- raster::raster(clipped_path)
+
+} else {
+  # Step 1: Load or download raw elevation
+  if (file.exists(elev_path)) {
+    elev <- raster::raster(elev_path)
+  } else {
+    elev <- get_elev_raster(locations = bbox_sf, z = 10, clip = "bbox")
+    writeRaster(elev, elev_path, overwrite = TRUE)
+  }
+
+  # Step 2: Clip to Oʻahu outline
+  elev_clipped <- crop(elev, hawaii_outline) %>%
+    raster::mask(hawaii_outline)
+  # Ensure elevation values are non-negative
+  elev_clipped[elev_clipped < 0] <- 0
+
+  # Step 3: Save clipped raster
+  writeRaster(elev_clipped, clipped_path, overwrite = TRUE)
+}
+
+# Raster to df for plotting
+elev_df <- as.data.frame(rasterToPoints(elev_clipped))
+colnames(elev_df) <- c("x", "y", "elevation")
+#summary(elev_df$elevation)
+
+# Final plot
+map <- ggplot() +
+  # elevation background
+  geom_tile(data = elev_df, aes(x = x, y = y, fill = elevation)) +
+  scale_fill_gradient(low = "white", high = "black", guide = "none") +
+  new_scale_fill() + 
+  # outline and ridges
+  geom_sf(data = hawaii_outline, fill = NA, color = "black", linewidth = 0.3) +
+  geom_sf(data = ohia_tracks, aes(color = sample_site), linewidth = 1.2) +
+  # elevation labels
+  geom_label_repel(
+    data = elev_labels,
+    aes(x = coord_y, y = coord_x, label = label),
+    #stat = "sf_coordinates",
+    size = 3,
+    box.padding = 0.4,
+    seed = 42,
+    color = "black",
+    fill = "white",
+    segment.color = "black",
+    segment.size = 0.55,
+    min.segment.length = 0.1,
+    label.size = 0.2,
+    max.overlaps = Inf,
+    force = 2
+  ) +
+  scale_color_npg() +
+  coord_sf(xlim = c(-158.3, -157.6), ylim = c(21.25, 21.71), expand = FALSE) +
+  annotation_scale(location = "bl", width_hint = 0.2) +
+  annotation_north_arrow(location = "tl", which_north = "true",
+                         style = north_arrow_fancy_orienteering) +
+  labs(title = "ʻŌhiʻa Ridge Sampling Tracks on Oʻahu", color = "Ridge",
+       x = "", y = "") +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.major = element_line(color = "grey90"),
+    axis.text.x = element_text(angle = 30, hjust = 1),
+    axis.text.y = element_text(angle = 30, hjust = 1)
+  )
+
+map
+```
+
+Figure 1.: Ridge sampling tracks across Oʻahu, Hawaiʻi. Sampling tracks (colored by ridge) represent arthropod eDNA collections from Metrosideros polymorpha (ʻōhiʻa) along five elevation gradients. Base elevation was derived from a digital elevation model clipped to Oʻahu's outline, with values normalized to start at sea level. Labels indicate the minimum and maximum elevation of each ridge transect (in meters). Map elements include scale bar and north arrow for orientation. scale bar and north arrow for orientation.
+
+```{r save-map}
+# Save figure in multiple formats
+# ggsave(
+#   plot = map,
+#   here::here("figures", paste0("ohia_oahu_sampling_map_", Sys.Date(), ".png")),
+#   width = 8,
+#   height = 6,
+#   dpi = 600
+# )
+
+# ggsave(
+#   plot = map,
+#   here::here("figures", paste0("ohia_oahu_sampling_map_", Sys.Date(), ".svg")),
+#   width = 8,
+#   height = 6
+# )
+
+save_fig(
+  tag   = "Fig1_ohia_oahu_sampling_map",
+  plot  = map,
+  which = "main",
+  prefix = "date",
+  width = 8,
+  height = 6,
+  dpi   = 600
+)
+```

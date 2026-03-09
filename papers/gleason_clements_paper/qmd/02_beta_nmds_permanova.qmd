@@ -1,0 +1,1034 @@
+---
+format: html
+editor: visual
+---
+
+```{r setup, include=FALSE}
+source(here::here("papers","gleason_clements_paper","R","00_source.R"))
+```
+
+# NMDS calculation 5 ridges
+
+```{r nmds_calculation_5, message=FALSE, warning=FALSE, results='hide', echo = FALSE}
+#### NMDS 5 RIDGES CALCULATIONS ######
+nmdsohia <- metaMDS(zotu_df |>
+                      filter(!str_detect(sample_id, "control")) |>
+                      filter(!str_detect(sample_id, "CH|H")) |>
+                      filter(!str_detect(sample_id, "KT1")) |>
+                      filter(!str_detect(sample_id, "KA5")) |>
+                      filter(!str_detect(sample_id, "K_|G_")) |>
+                      column_to_rownames("sample_id"), 
+                        distance = "bray", k = 2, trymax = 9999)
+
+NMDSscoresohia <- scores(nmdsohia , display = "sites") %>% 
+  as.data.frame() %>% 
+  rownames_to_column("sample_id") %>% 
+  left_join(meta_oahu, by = "sample_id") |>   
+  mutate(elev_arrow = case_when(
+    elev_band == "High" ~ "\u25B2",  # ▲
+    elev_band == "Mid"  ~ "\u25A0",  # ■
+    elev_band == "Low"  ~ "\u25BC"   # ▼
+    )
+  )
+```
+
+## 📊 NMDS Elevation
+
+```{r nmds_elevation, message=FALSE, warning=FALSE, results='hide', echo = FALSE}
+
+
+
+NMDSstressohia <- round(nmdsohia$stress,2) * 100
+
+
+hull_data_site <- 
+  NMDSscoresohia %>%
+  drop_na(sample_site) %>%
+  group_by(sample_site) %>% 
+  dplyr::slice(chull(NMDS1, NMDS2))
+
+
+##### Elevation continues meter ########
+
+
+# hulls (skip tiny groups)
+hulls <- NMDSscoresohia |>
+  filter(!is.na(elev_band)) |>
+  group_by(elev_band) |>
+  filter(n() >= 3) |>
+  slice(chull(NMDS1, NMDS2)) |>
+  ungroup()
+
+# dummy layer to drive the band legend with shapes
+band_key <- NMDSscoresohia |>
+  distinct(elev_band) |>
+  mutate(NMDS1 = 0, NMDS2 = 0)
+
+nmds_elevation_m_plot <- ggplot(NMDSscoresohia, aes(NMDS1, NMDS2)) +
+  # 1) HULLS — keep them OUT of the legend
+  geom_polygon(
+    data = hulls,
+    aes(fill = elev_band, group = elev_band),
+    alpha = 0.18, color = "grey30", linewidth = 0.6,
+    show.legend = FALSE              # <<< important
+  ) +
+  # 2) DUMMY POINTS — create the band legend with shapes
+  geom_point(
+    data = band_key,
+    aes(NMDS1, NMDS2, fill = elev_band, shape = elev_band),
+    color = "black", size = 4, stroke = 1.1,
+    inherit.aes = FALSE, alpha = 0, show.legend = FALSE
+  ) +
+  scale_shape_manual(
+    values = c(High = 24, Mid = 22, Low = 25),
+    guide  = "none"                  # hide separate shape legend
+  ) +
+  scale_fill_manual(
+    values = c(Low="#381991", Mid="#ca477a", High="#f3ee26"),
+    breaks = c("High","Mid","Low"),
+    name   = "Elevation band",
+    guide  = guide_legend(
+      keyheight = unit(10, "pt"), keywidth = unit(18, "pt"),
+      override.aes = list(alpha = 0, shape = NA, colour = "black", size = 4),
+      key_glyph = "point"            # force point glyphs (no squares)
+    )
+  ) +
+
+  new_scale_fill() +
+
+  # 3) REAL POINTS — gradient fill + shapes
+  geom_point(aes(fill = elevation_m, shape = elev_band),
+             color = "black", size = 4, stroke = 1.1) +
+  scale_fill_viridis_c(
+    option = "plasma",
+    limits = range(NMDSscoresohia$elevation_m, na.rm = TRUE),
+    name   = "Elevation (m)",
+    guide  = guide_colorbar(
+      title.position="top", 
+      direction="vertical",
+      barwidth=unit(10,"pt"), 
+      barheight=unit(140,"pt"), 
+      ticks=TRUE)
+  ) +
+  coord_cartesian(xlim = c(-.5, .5), ylim = c(-.51, .51)) +
+  labs(x = glue("MDS1 \nStress = {NMDSstressohia} %"), y = "MDS2") +
+  theme_classic() +
+  theme(
+    legend.position = "right",
+    legend.box = "vertical",
+    legend.title = element_text(size = 14),
+    legend.text  = element_text(size = 12),
+    axis.text    = element_markdown(size = 13, color = "black"),
+    axis.title   = element_text(color = "black")
+  ) +
+  guides(shape ="none")
+```
+
+## 📊 NMDS sites
+
+```{r nmds_sites, message=FALSE, warning=FALSE, results='hide', echo = FALSE}
+
+# optional: tiny df to drive the shape legend (no effect on plot)
+band_key <- tibble::tibble(
+  elev_band = factor(c("High","Mid","Low"), levels = c("High","Mid","Low")),
+  NMDS1 = 1e6, NMDS2 = 1e6
+)
+
+# 1 plot
+nmds_site_plot <- ggplot(NMDSscoresohia) +
+  # 2) elevation as text glyphs, colored by ridge (NO legend)
+  geom_text(aes(NMDS1, NMDS2, label = elev_arrow, colour = sample_site),
+            size = 6, show.legend = FALSE) +
+
+  # 3) ridge hulls: FILL drives ridge legend; outline is constant
+  geom_polygon(
+    data = hull_data_site,
+    aes(NMDS1, NMDS2, fill = sample_site, group = sample_site),
+    color = 'grey30', linewidth = 0.6, alpha = 0.20,
+    show.legend = TRUE, key_glyph = ggplot2::draw_key_rect   # <- force patch keys
+  ) +
+
+  # 4) dummy points drive the Elevation band SHAPE legend (actual glyphs)
+  geom_point(
+    data = band_key,
+    aes(NMDS1, NMDS2, shape = elev_band),   # shape ONLY
+    colour = "black", size = 4, stroke = 1.1,
+    inherit.aes = FALSE, show.legend = TRUE   # alpha=1; clipped off-panel
+  ) +
+
+  # 5) shape legend for bands (▲ ■ ▽) FIRST
+  scale_shape_manual(
+    name   = "Elevation band\nbased on Jenks",
+    breaks = c("High","Mid","Low"),
+    values = c(High = 2, Mid = 0, Low = 6),
+    guide  = guide_legend(order = 1,
+                          override.aes = list(
+                            fill = NA))          # order here (don’t use trailing guides())
+  ) +
+
+  # 6) ridge palette as PATCHES ONLY, SECOND
+  scale_fill_npg(
+    name = "Ridges on Oʻahu",
+    guide = guide_legend(
+      order = 2,
+      key_glyph   = ggplot2::draw_key_rect,   # rectangles, not points
+      override.aes = list(shape = NA, colour = NA, alpha = 1)
+    )
+  ) +
+  # keep ridge colours for text glyphs but hide the colour legend entirely
+  scale_colour_npg(guide = "none") +
+
+  coord_cartesian(xlim = c(-.5, .5), ylim = c(-.51, .51)) +
+  labs(x = glue::glue("MDS1 \nStress = {NMDSstressohia} %"),
+       y = "MDS2") +
+  theme_classic() +
+  theme(
+    legend.position = "right",
+    legend.box = "vertical",
+    legend.key = element_rect(fill = "transparent", colour = "white"), # <- don’t blank it
+    legend.key.height = unit(0.6, "cm"),                          # <- key height drives spacing
+    legend.key.width  = unit(0.6, "cm"),
+    legend.key.spacing.y = unit(0.05, "cm"),
+    legend.title = element_text(size = 13),
+    legend.text  = element_text(size = 13),
+    axis.text    = ggtext::element_markdown(size = 13, colour = "black"),
+    axis.title   = element_text(colour = "black")
+  )
+```
+
+## 📊 NMDS Rainfall
+
+```{r nmds_rainfall, message=FALSE, warning=FALSE, results='hide', echo = FALSE}
+
+# -------------------------------------------------
+# 1) Bands
+# -------------------------------------------------
+NMDSscoresohia <- NMDSscoresohia %>%
+  mutate(
+    # rainfall bands from source-defined breaks
+    rain_band = cut(rainfall,
+                    breaks = rain_brks,
+                    include.lowest = TRUE,
+                    labels = c("Low","Mid","High")),
+    # make sure elevation band order matches your convention
+    elev_band = factor(elev_band, levels = c("High","Mid","Low"))
+  )
+
+# Hulls per rainfall band (skip tiny groups)
+hulls_rain <- NMDSscoresohia %>%
+  filter(!is.na(rain_band)) %>%
+  group_by(rain_band) %>%
+  filter(n() >= 3) %>%
+  slice(chull(NMDS1, NMDS2)) %>%
+  ungroup()
+
+# discrete colors for hulls (YlGnBu: Low=yellow, Mid=green, High=blue)
+hull_cols <- c(Low  = brewer.pal(3, "YlGnBu")[1],
+               Mid  = brewer.pal(3, "YlGnBu")[2],
+               High = brewer.pal(3, "YlGnBu")[3])
+
+# -------------------------------------------------
+# 2) Plot
+# -------------------------------------------------
+nmds_rainfall_plot <- ggplot(NMDSscoresohia, aes(NMDS1, NMDS2)) +
+  # Rainfall-band hulls (no legend)
+  geom_polygon(
+    data = hulls_rain,
+    aes(fill = rain_band, group = rain_band),
+    alpha = 0.25, color = "grey30", linewidth = 0.6, show.legend = FALSE
+  ) +
+  scale_fill_manual(values = hull_cols, guide = "none") +
+  new_scale_fill() +
+
+  # Points: rainfall gradient (fill) + elevation band shapes
+  geom_point(aes(fill = rainfall, shape = elev_band),
+             color = "black", size = 4, stroke = 1.1) +
+  scale_shape_manual(
+    name   = "Elevation band\nbased on jenks",
+    values = c(Low = 25, Mid = 22, High = 24)   # ▼, ■, ▲
+  ) +
+  scale_fill_distiller(
+    palette = "YlGnBu", direction = 1,          # yellow → blue
+    limits  = range(NMDSscoresohia$rainfall, na.rm = TRUE),
+    name    = "Rainfall (mm/yr)",
+    guide   = guide_colorbar(
+      title.position = "top",
+      direction      = "vertical",
+      barwidth       = unit(10, "pt"),
+      barheight      = unit(140, "pt"),
+      ticks          = TRUE
+    )
+  ) +
+  coord_cartesian(xlim = c(-.5, .5), ylim = c(-.51, .51)) +
+  labs(x = glue("MDS1 \nStress = {NMDSstressohia} %"), y = "MDS2") +
+  theme_classic() +
+  theme(
+    legend.position = "right",
+    legend.box = "vertical",
+    legend.title = element_text(size = 14),
+    legend.text  = element_text(size = 12),
+    axis.text    = element_markdown(size = 13, color = "black"),
+    axis.title   = element_text(color = "black")
+  )
+```
+
+
+
+
+
+## 📊 NMDS - PANEL
+
+```{r nmds-plots,  echo=FALSE, fig.width=12, fig.height=12, out.width="100%", fig.align="center", warning = FALSE}
+
+
+stressplot(nmdsohia)
+nmds_site_plot
+nmds_elevation_m_plot
+nmds_rainfall_plot
+
+
+# create panel with patchwork
+# elevation and rainfall on the top while sample site in in the middle below in the same size
+# create a patchwork design 11112222
+#                           11112222
+#                           ##3333##
+#                           ##3333##
+
+
+NMDS_panel <-
+  # Row 1: 11112222
+  (nmds_elevation_m_plot + nmds_rainfall_plot) +
+  # Row 2: ##3333##  (spacer + centered plot + spacer)
+  (nmds_site_plot) +
+  plot_layout(
+    design = "
+    AABB
+    #CC#
+    "
+  ) +
+  plot_annotation(tag_levels = "A", , tag_suffix = ')') & 
+  theme(plot.tag = element_text(size = 16))
+
+NMDS_panel
+```
+
+# 📊 Plot 2: NMDS panel {#nmds}
+
+```{r nmds-panel, echo=FALSE, fig.width=12, fig.height=12, out.width="100%", fig.align="center", warning = FALSE}
+
+
+#save this to png and svg file with dynamic date with paste0
+
+# ggsave(here::here("figures", paste0("NMDS_panel_", Sys.Date(), ".png")), 
+#        plot = NMDS_panel, 
+#        width = 8, height = 12, dpi = 300)
+
+# save as png with function as main figure
+
+save_fig(
+  tag   = "Fig1_NMDS_panel_site_vs_elevation",
+  plot  = NMDS_panel,
+  which = "main",
+  prefix = "date",
+  width  = 12,
+  height = 12
+)
+
+```
+
+Figure X: Arthropod assemblages differ more strongly by site than elevation: Two-dimensional NMDS plots based on presence-absence data of arthropod communities from eDNA samples show that sampling site explains more variation in community composition than elevation.Top panel Comparison of the three most common trees across a small elevation gradient on Aiea & Manana Ridge. Stress value above 20% Middle panel: The same NMDS ordination, now grouped by sampling site; colored polygons highlight that samples from the same site cluster tightly despite differing in elevation. Each shape indicates the elevation level of the sample (triangles = high, inverted triangles = low, squares = mid). Stress value of 15% indicates a reliable two-dimensional representation of dissimilarities. Bottom panel: Samples grouped by elevation level (high, mid, low) across all sites; shaded polygons connect samples from the same elevation.
+
+# Statistical Analyses mainly focusing on ß-diversity
+
+## ʻŌhiʻa – Community differences by Site {#initial-analyses}
+
+```{r statistical-setup2, warning = FALSE, echo = FALSE}
+
+# Ensure sample_id is character
+meta_data$sample_id <- as.character(meta_data$sample_id)
+zotu_df$sample_id <- as.character(zotu_df$sample_id)
+
+# Merge metadata with zotu table, remove controls
+merged_df <- meta_data %>% 
+  inner_join(zotu_df, by = "sample_id") |> 
+  filter(!str_detect(sample_id, "control"))
+
+# Extract OTU matrix for analysis
+zotu_matrix <- merged_df %>% 
+  dplyr::select(starts_with("zotu")) %>% 
+  as.matrix()
+rownames(zotu_matrix) <- merged_df$sample_id
+
+# Calculate Bray-Curtis dissimilarity
+bray_dist <- vegdist(zotu_matrix, method = "bray")
+```
+
+```{r ohia-site-statistics, echo = FALSE}
+# --------------------------------------------
+# 1. OHIA ONLY - Differences between sites
+ohia_df <- merged_df |>  
+  filter(commonname == "ʻōhiʻa Lehua") |> 
+  filter(!str_detect(sample_id, "control")) |>
+  filter(!str_detect(sample_id, "CH|H")) |>
+  filter(!str_detect(sample_id, "KT1")) |>
+  filter(!str_detect(sample_id, "KA5")) |>
+  filter(!str_detect(sample_id, "K_|G_")) 
+
+zotu_ohia <- ohia_df |> 
+  filter(!str_detect(sample_id, "control")) |>
+  filter(!str_detect(sample_id, "CH|H")) |>
+  filter(!str_detect(sample_id, "KT1")) |>
+  filter(!str_detect(sample_id, "KA5")) |>
+  filter(!str_detect(sample_id, "K_|G_")) |>
+  dplyr::select(starts_with("zotu")) %>% as.matrix()
+
+rownames(zotu_ohia) <- ohia_df$sample_id
+bray_ohia <- vegdist(zotu_ohia, method = "bray")
+
+# PERMANOVA for sample_site within Ohia
+adonis_ohia_site <- adonis2(bray_ohia ~ sample_site, data = ohia_df)
+print(adonis_ohia_site)
+```
+
+{#initial-analyses}
+
+A PERMANOVA based on Bray-Curtis dissimilarities showed that arthropod community composition within ʻōhiʻa stands varied significantly by sampling site (R² = 0.21, p = 0.002), suggesting strong site-specific effects across the Oʻahu gradient.
+
+## 📊 Supl Plot: Beta Diversity Decomposition
+
+```{r ohia-betadisp-plot-setup, echo = FALSE}
+
+ohia_dispersion <- betadisper(bray_ohia, ohia_df$sample_site)
+ohia_df_disp <- data.frame(distance = ohia_dispersion$distances,
+                            tree_species = ohia_df$commonname,
+                           sample_site = ohia_df$sample_site,
+                           island = ohia_df$island)
+ohia_df_disp |>
+  rownames_to_column("sample_id") |>
+  filter(!str_detect(sample_id, "control")) |>
+  filter(!str_detect(sample_id, "CH|H")) |>
+  filter(!str_detect(sample_id, "KT1")) |>
+  filter(!str_detect(sample_id, "KA5")) |>
+  filter(!str_detect(sample_id, "K_|G_")) |>
+  ggplot(aes(x = sample_site, y = distance, fill = sample_site)) +
+  geom_boxplot() +
+  scale_fill_npg() +
+  theme_minimal() +
+  labs(
+    title = "Beta Dispersion across ʻōhiʻa sites on Oʻahu",
+    x = "Sample Site",
+    y = "Distance to Centroid",
+    fill = "Ridges"
+  )
+
+
+permutest(ohia_dispersion)
+
+```
+
+Although community dispersion varied visually across sampling sites, a test for homogeneity of multivariate dispersions was not statistically significant (F = 1.87, p = 0.119). This supports the validity of the PERMANOVA result, indicating that observed differences in arthropod community composition across ʻōhiʻa sites are not driven by differences in within-site variability.
+
+## Section 3: ʻŌhiʻa – Community differences by elevation
+
+```{r ohia-elevations-statistics, echo = FALSE}
+# --------------------------------------------
+# 2. OHIA ONLY - Differences by elevation
+
+elev_dispersion <- betadisper(bray_ohia, ohia_df$commonname)
+elev_df_disp <- data.frame(distance = ohia_dispersion$distances,
+                            tree_species = ohia_df$commonname,
+                           sample_site = ohia_df$sample_site,
+                           island = ohia_df$island,
+                           elev_band = ohia_df$elev_band)
+
+# Create plotting df
+elev_df_disp <- data.frame(
+  distance = elev_dispersion$distances,
+  elevation = ohia_df$elev_band,
+  sample_site = ohia_df$sample_site,
+  island = ohia_df$island
+)
+
+# Boxplot showing within-group beta dispersion by elevation
+elev_df_disp |>
+  filter(island != "Hawaii") |>
+  
+  ggplot(aes(x = elevation, y = distance, fill = elevation)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(
+    title = "Beta Dispersion across elevation groups (ʻŌhiʻa only)",
+    x = "Elevation", y = "Distance to Centroid"
+  )
+```
+
+```{r elevations-statistics, echo = FALSE}
+adonis_ohia_elev <- adonis2(bray_ohia ~ elev_band, data = ohia_df)
+print(adonis_ohia_elev)
+
+elev_dispersion <- betadisper(bray_ohia, ohia_df$elev_band)  # ✅ fix
+permutest(elev_dispersion)  # (optional but important)
+```
+
+We found no significant differences in arthropod community composition across elevations within ʻōhiʻa stands (PERMANOVA: R² = 0.058, p = 0.401). However, a test for homogeneity of dispersion revealed that beta diversity varied significantly across elevations (F = 5.18, p = 0.013), indicating that community consistency differs with elevation despite no shift in centroids.
+
+```{r permanova-combined, warning - FALSE, echo = FALSE}
+# Subset only ʻōhiʻa samples from Oʻahu
+ohia_oahu_df <- merged_df  |> 
+    filter(!str_detect(sample_id, "control")) |>
+  filter(!str_detect(sample_id, "CH|H")) |>
+  filter(!str_detect(sample_id, "KT1")) |>
+  filter(!str_detect(sample_id, "KA5")) |>
+  filter(!str_detect(sample_id, "K_|G_")) 
+
+# Prepare OTU matrix and Bray-Curtis distance
+zotu_ohia_oahu <- ohia_oahu_df |> 
+    filter(!str_detect(sample_id, "control")) |>
+  filter(!str_detect(sample_id, "CH|H")) |>
+  filter(!str_detect(sample_id, "KT1")) |>
+  filter(!str_detect(sample_id, "KA5")) |>
+  filter(!str_detect(sample_id, "K_|G_")) |>
+  dplyr::select(starts_with("zotu")) %>%
+  as.matrix()
+
+rownames(zotu_ohia_oahu) <- ohia_oahu_df$sample_id
+
+bray_ohia_oahu <- vegdist(zotu_ohia_oahu, method = "bray")
+
+# Run combined PERMANOVA
+adonis_ohia_combined <- adonis2(
+  bray_ohia_oahu ~ sample_site + elev_band,
+  data = ohia_oahu_df
+)
+
+print(adonis_ohia_combined)
+```
+
+A combined PERMANOVA model revealed that site and elevation together significantly structured arthropod community composition within ʻōhiʻa stands across Oʻahu (R² = 0.37, p = 0.002). These variables jointly explained \~37% of the observed variation, indicating that spatial and elevational differences play a strong role in shaping arthropod assemblages within this native forest type.
+
+# Beta-diversity within between subsets
+
+```{r beta-within-between, echo = FALSE, fig.width=8, fig.height=12, out.width="100%", fig.align="center", warning = FALSE}
+#create a df from ohia distance matrix
+
+meta_data_short1 <- meta_data %>% 
+  dplyr::select(sample_id, sample_site, elev_band, island, commonname) |> 
+  rename_with(~ paste0(., "_1"), -sample_id)
+
+meta_data_short2 <- meta_data %>% 
+  dplyr::select(sample_id, sample_site, elev_band, island,commonname) |> 
+  rename_with(~ paste0(., "_2"), -sample_id)
+
+bray_ohia_df <- as.matrix(bray_ohia) |> 
+  as.data.frame() |> 
+  rownames_to_column(var = "sample_id") |>
+  pivot_longer(-sample_id, names_to = "sample_id2", values_to = "distance") |>
+  left_join(meta_data_short1, by = c("sample_id" = "sample_id"), suffix = c("", "_s1")) |>
+  filter(sample_id != sample_id2) |>
+  left_join(meta_data_short2, by = c("sample_id2" = "sample_id"), c("", "_s2")) 
+
+
+within_sites <- bray_ohia_df |>
+  filter(sample_site_1 == sample_site_2) |> 
+  filter(island_1 == "Oahu") |> 
+  filter(island_2 == "Oahu") |> 
+  mutate(comparison = "within Ridges",
+         order = "1_all_sites")
+
+between_sites <- bray_ohia_df |>
+  filter(sample_site_1 != sample_site_2) |> 
+  filter(sample_site_1 < sample_site_2) |> 
+   filter(island_1 == "Oahu") |> 
+  filter(island_2 == "Oahu") |> 
+  mutate(comparison = "between Ridges",
+         order = "1_all_sites")
+
+within_elevation <- bray_ohia_df |>
+  filter(elev_band_1 == elev_band_2) |> 
+  filter(island_1 == "Oahu", island_2 == "Oahu") |> 
+  mutate(comparison = "within elevation\nbands", 
+         order = "2_elevation_category")
+
+between_elevation <- bray_ohia_df |>
+  filter(elev_band_1 != elev_band_2) |> 
+  filter(sample_site_1 < sample_site_2) |> 
+  filter(island_1 == "Oahu") |> 
+  filter(island_2 == "Oahu") |>  
+  mutate(comparison = "between elevation\nbands",
+         order = "2_elevation_category")
+
+beta_comp <- bind_rows(
+  within_sites, between_sites, 
+  within_elevation, between_elevation)
+
+beta_comb_plot <- beta_comp |>
+  mutate(comparison = as.factor(comparison))|>
+  ggplot(aes(x = fct_reorder(comparison, order), 
+             y = distance)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Beta Diversity across all ‘Ōhi‘a samples from O‘ahu\nGrouped by comparison type",
+       x = "Comparison", 
+       y = "beta diversity distance") +
+  facet_wrap(~order, scales = "free_x", ncol =1) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave(here::here("figures/beta_diversity_comparison.png"),
+       plot =beta_comb_plot,
+       width = 10, 
+       height = 10, 
+       units = "in")
+
+
+beta_comb_plot
+```
+
+# More in detail beta-div tests {#beta-div}
+
+```{r beta-within-between-statistics, echo = FALSE, warning = FALSE}
+# Kruskal-Wallis test across all groups
+kruskal_result <- kruskal.test(distance ~ comparison, data = beta_comp)
+print(kruskal_result)
+
+# Pairwise Wilcoxon tests with FDR correction
+pairwise_result <- pairwise.wilcox.test(beta_comp$distance,
+                                        beta_comp$comparison,
+                                        p.adjust.method = "fdr")
+print(pairwise_result)
+```
+
+```{r}
+# INPUT assumed: beta_comp with columns
+#   - distance  (numeric Bray–Curtis dissimilarity)
+#   - comparison (factor/chr with your 7 levels)
+
+library(dplyr)
+library(ggplot2)
+library(multcompView)
+
+# 1) Global & pairwise tests (FDR)
+kw <- kruskal.test(distance ~ comparison, data = beta_comp)
+
+pw <- pairwise.wilcox.test(beta_comp$distance, beta_comp$comparison,
+                           p.adjust.method = "fdr", exact = FALSE)
+
+# 2) Convert the pairwise p-value matrix to a named vector "A-B" -> p
+mat  <- pw$p.value
+lvls <- base::union(rownames(mat), colnames(mat))
+full <- matrix(NA_real_, length(lvls), length(lvls), dimnames = list(lvls, lvls))
+full[rownames(mat), colnames(mat)] <- mat           # lower triangle
+full[colnames(mat), rownames(mat)] <- t(mat)        # mirror to upper
+
+pairs <- combn(lvls, 2, simplify = FALSE)
+pvec  <- sapply(pairs, function(x) full[x[1], x[2]])
+names(pvec) <- sapply(pairs, paste, collapse = "-")
+
+# 3) Get letters (threshold = 0.05 by default)
+letters <- multcompLetters(pvec, threshold = 0.05)$Letters
+# letters is a named vector: levels -> "a", "b", ...
+
+# 4) Position for letters (a bit above each group max)
+lab_pos <- beta_comp %>%
+  group_by(comparison) %>%
+  summarise(y = max(distance, na.rm = TRUE), .groups = "drop") %>%
+  mutate(letter = letters[as.character(comparison)],
+         y = y + 0.03)   # raise letters; tweak as needed
+
+beta_comp <- beta_comp %>%
+  mutate(comparison = factor(
+    comparison,
+    levels = c(
+      "within Ridges",
+      "between Ridges",
+      "within elevation\nbands",
+      "between elevation\nbands"
+    )
+  ))
+
+# 5) Plot: violin + box + CLD letters
+ggplot(beta_comp, aes(x = comparison, y = distance, fill = comparison)) +
+  geom_violin(width = 0.9, alpha = 0.35, colour = NA, trim = FALSE) +
+  geom_boxplot(width = 0.22, outlier.shape = NA, alpha = 0.9) +
+  # (optional) raw points
+  # geom_jitter(width = 0.08, alpha = 0.25, size = 1.1, colour = "grey30") +
+  geom_text(data = lab_pos, aes(x = comparison, y = y, label = letter),
+            inherit.aes = FALSE, size = 5) +
+  scale_y_continuous(expand = expansion(mult = c(0.02, 0.12))) +
+  labs(x = NULL, y = "Bray–Curtis dissimilarity",
+       caption = sprintf("Kruskal–Wallis: χ² = %.2f, df = %d, p < 2e-16",
+                         unname(kw$statistic), unname(kw$parameter))) +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(size = 11, angle = 25, hjust = 1),
+    axis.text.y = element_text(size = 11),
+    axis.title.y = element_text(size = 12)
+  )
+
+#calculate mean and se for each group
+beta_comp_summary <- beta_comp %>%
+  group_by(comparison) %>%
+  summarise(
+    median_distance = median(distance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+```
+
+A Kruskal–Wallis test showed strong differences in Bray–Curtis distances among comparison types (χ² = 127.9, df = 6, p \< 2×10⁻¹⁶). Using Jenks elevation bands, most pairwise contrasts remained significant after FDR. However, distances between sites did not differ from between-elevation or within-elevation distances, and within the Manana and Aiea co-occurrence subset, between-species distances did not differ from within-elevation or within-species distances. Thus, while between-group turnover is generally higher, site vs. elevation contrasts are comparable, and species turnover at Lēkēs ridges is not stronger than within-band or within-species turnover.
+
+# Beta Diversity Decomposition based on Sorensen Family {#beta-decomp}
+
+We want to expose the components of beta diversity, specifically turnover and nestedness, using the Sorensen index. This will help us understand how much of the dissimilarity is due to species turnover versus nestedness.
+
+-Are differences between communities driven by species replacement (turnover)?
+
+-Or by nestedness (e.g. lowland sites losing taxa)?
+
+-Which sites are more compositionally heterogeneous (high within-site turnover)?
+
+This goes beyond Bray-Curtis, offering more ecological insight.
+
+```{r decomposition-setup, message=FALSE, warning=FALSE, results='hide', echo = FALSE}
+
+#Beta Diversity Decomposition
+# Convert to presence/absence to bee 100% sure
+zotu_pa <- zotu_df |>
+  filter(!str_detect(sample_id, "control")) |>
+  filter(!str_detect(sample_id, "CH|H")) |>
+  filter(!str_detect(sample_id, "KT1|KA5")) |>
+  filter(!str_detect(sample_id, "G_|K_")) |>
+  column_to_rownames("sample_id") |> 
+  mutate(across(everything(), ~ if_else(.x > 0, 1, 0))) |> 
+  as.matrix()
+
+#str(zotu_pa)
+
+# Compute beta diversity components
+beta_part <- beta.pair(zotu_pa, index.family = "sorensen")
+#str(beta_part)
+
+# This gives:
+# - beta_part$beta.sor: total dissimilarity
+# - beta_part$beta.sim: turnover
+# - beta_part$beta.sne: nestedness-resultant
+```
+
+NMDS based on beta.sim will show us the turnover component of beta diversity, which is the species replacement component. This will help us understand how much of the dissimilarity is due to species turnover versus nestedness.
+
+```{r decomposition-plot, message=FALSE, warning=FALSE, results='hide', echo = FALSE}
+
+# Example: NMDS on turnover
+nmds_ohia_turn <- metaMDS(beta_part$beta.sim, k = 2, trymax = 9999)
+
+# Extract site scores and merge with metadata
+NMDSscores_ohia_turn <- scores(nmds_ohia_turn, display = "sites") |>
+  as.data.frame() |>
+  rownames_to_column("sample_id") |>
+  left_join(meta_data, by = "sample_id")
+
+# Extract stress value (as %)
+NMDSstress_ohia_turn <- round(nmds_ohia_turn$stress, 2) * 100
+
+# Stress plot
+stressplot(nmds_ohia_turn)
+
+hull_ohia_turn <- 
+  NMDSscores_ohia_turn %>%
+  drop_na(sample_site) %>%
+  group_by(sample_site) %>% 
+  dplyr::slice(chull(NMDS1, NMDS2))
+
+nmds_ohia_turn_plot <-  NMDSscores_ohia_turn |> 
+  mutate(elev_arrow = case_when(
+    elev_band == "High" ~ "\u25B2",  # ▲
+    elev_band == "Mid"  ~ "\u25A0",  # ■
+    elev_band == "Low"  ~ "\u25BC"   # ▼
+  )) |> 
+  ggplot() +
+  
+  # main glyph layer
+  geom_text(
+    aes(NMDS1, NMDS2, label = elev_arrow, color = sample_site),
+    size = 6, show.legend = FALSE
+  ) +
+  
+  # dummy for combined shape + color legend
+  geom_point(
+    data = NMDSscores_ohia_turn |> distinct(sample_site, elev_band),
+    aes(x = 999, y = 999, fill = sample_site, shape = elev_band),
+    color = "black",
+    size = 4,
+    stroke = 1.1,
+    show.legend = TRUE,
+    inherit.aes = FALSE
+  ) +
+  
+  # group hulls
+  geom_polygon(
+    data = hull_ohia_turn,
+    aes(NMDS1, NMDS2, color = sample_site, fill = sample_site),
+    alpha = 0.2
+  ) +
+
+  scale_color_npg() +
+  scale_fill_npg() +
+  coord_cartesian(xlim = c(-.6,.6), ylim = c(-.6,.6)) +
+  scale_shape_manual(
+    name = "Elevation",
+    values = c("high" = 24, "mid" = 22, "low" = 25)
+  ) +
+  
+  labs(x = glue("MDS1 \nStress = {NMDSstress_ohia_turn} %"),
+       y = "MDS2") +
+  
+  theme_classic() +
+  theme(
+    legend.title = element_text(size = 13),
+    legend.text = element_text(size = 13),
+    axis.text = element_markdown(size = 13, color = "black"),
+    axis.title = element_text(color = "black")
+  )
+
+
+nmds_ohia_turn_plot
+
+```
+
+```{r pro-test, echo = FALSE, warning = FALSE}
+
+pro <- protest(nmdsohia, nmds_ohia_turn)
+summary(pro)
+```
+
+#beta-div2 {#beta-div2}
+
+```{r PERMANOVA-III}
+
+# Sequential (Type I; for reference)
+fit_seq   <- adonis2(bray_ohia_oahu ~ sample_site + elev_band,
+                     data = ohia_oahu_df, permutations = 999)
+
+# Marginal (Type III; unique contribution of each term adjusting for the other)
+fit_marg  <- adonis2(bray_ohia_oahu ~ sample_site + elev_band,
+                     data = ohia_oahu_df, permutations = 999, by = "margin")
+
+fit_seq
+fit_marg
+
+tab_marg <- as.data.frame(fit_marg) |>
+  rownames_to_column("term") |>
+  dplyr::select(term, Df, `SumOfSqs`, R2, F, `Pr(>F)`)
+tab_marg
+
+fit_elev_within_site <- adonis2(bray_ohia_oahu ~ elev_band,
+                                data = ohia_oahu_df,
+                                permutations = 999,
+                                strata = ohia_oahu_df$sample_site)
+fit_elev_within_site
+
+bd_site <- betadisper(bray_ohia_oahu, ohia_oahu_df$sample_site)
+anova(bd_site); permutest(bd_site, permutations = 999)
+
+bd_band <- betadisper(bray_ohia_oahu, ohia_oahu_df$elev_band)
+anova(bd_band); permutest(bd_band, permutations = 999)
+
+pull_term <- function(tab, term, col) tab[rownames(tab)==term, col, drop=TRUE]
+
+site_R2  <- pull_term(fit_marg, "sample_site", "R2")
+site_F   <- pull_term(fit_marg, "sample_site", "F")
+site_p   <- pull_term(fit_marg, "sample_site", "Pr(>F)")
+
+band_R2  <- pull_term(fit_marg, "elev_band", "R2")
+band_F   <- pull_term(fit_marg, "elev_band", "F")
+band_p   <- pull_term(fit_marg, "elev_band", "Pr(>F)")
+
+elev_strata_F <- fit_elev_within_site$F[1]
+elev_strata_p <- fit_elev_within_site$`Pr(>F)`[1]
+
+```
+
+MDS ordinations based on Bray–Curtis and Sørensen turnover dissimilarities both revealed strong ridge-level structuring of arthropod communities. While the Bray–Curtis NMDS (Stress = 15%) yielded a slightly better fit than the Sørensen-based NMDS (Stress = 17%), both metrics showed consistent clustering. The Sørensen ordination emphasizes species turnover alone, confirming that site-level differences are driven not only by shifts in abundance but also by distinct species pools. The Bray–Curtis plot further suggests that relative abundance patterns reinforce community structure, particularly within elevation bands.
+
+A Procrustes analysis comparing the Bray–Curtis and Sørensen turnover NMDS ordinations revealed a high degree of congruence (Procrustes sum of squares = 0.208, RMSE = 0.102), with minimal rotation or scaling required. This confirms that site-level community differences are primarily driven by species turnover, and that patterns are consistent across presence–absence and abundance-based metrics
+
+PERMANOVA supported strong differences among ridges (R² = 0.283, p = 0.001), and including Jenks-defined elevation bands increased the explained variation (total R² = 0.371, p = 0.002). However, multivariate dispersion differed among groups (betadisper: F = 28.59, p = 0.001), so the PERMANOVA effects should be interpreted with caution because part of the signal may reflect differences in within-group spread.
+
+Further analysis with marginal tests(Type III) revealed that elevation band, ridge (site) explained 24.7% of Bray–Curtis variation (R² = 0.247, F = 1.278, p = 0.003). In contrast, after accounting for site, elevation band explained only 8.8% and was not significant (R² = 0.088, F = 0.908, p = 0.824). A constrained test of elevation within sites likewise showed no effect (F = 1.195, p = 0.663). These results indicate that ridge-level structure dominates community differences, whereas Jenks elevation bands do not add unique explanatory power beyond site. (As noted from the dispersion test, group dispersions differ, so R² should be interpreted with that caveat.)
+
+```{r decomposition-stats, echo = FALSE, warning = FALSE}
+
+# Turnover matrix to average per site
+turn_mat <- as.matrix(beta_part$beta.sim)
+
+ohia_meta <- meta_data |>
+  filter(!str_detect(sample_id, "control")) |>
+  filter(!str_detect(sample_id, "CH|H")) |>
+  filter(!str_detect(sample_id, "KT1|KA5")) |>
+  filter(!str_detect(sample_id, "G_|K_")) |>
+  arrange(base::match(sample_id, rownames(turn_mat)))
+
+# Sanity check
+stopifnot(all(ohia_meta$sample_id == rownames(turn_mat)))
+
+# Calculate average pairwise turnover *within* each site
+site_turnover <- ohia_meta |>
+  dplyr::select(sample_id, sample_site) |>
+  group_by(sample_site) |>
+  summarise(mean_turnover = {
+    # Get sample IDs for this site
+    ids <- sample_id
+    # Subset the matrix
+    site_dist <- turn_mat[ids, ids, drop = FALSE]
+    
+    # Extract lower triangle (pairwise distances, no double-counting)
+    lower_vals <- site_dist[lower.tri(site_dist)]
+    
+    # Mean of those values (NA if only 1 sample)
+    if (length(lower_vals) >= 1) mean(lower_vals) else NA_real_
+  })
+
+site_turnover
+```
+
+```{r decomposition-stats2, echo = FALSE, warning = FALSE}
+
+adonis_turn <- adonis2(beta_part$beta.sim ~ sample_site + elevation, data = ohia_meta)
+print(adonis_turn)
+
+turn_disp <- betadisper(beta_part$beta.sim, group = ohia_meta$sample_site)
+permutest(turn_disp)
+
+kruskal.test(mean_turnover ~ sample_site, data = site_turnover)
+
+pairwise.wilcox.test(site_turnover$mean_turnover, site_turnover$sample_site, p.adjust.method = "fdr")
+
+```
+
+Decomposition of beta diversity showed that community dissimilarity among ʻōhiʻa stands was primarily driven by species turnover, rather than nestedness. A PERMANOVA based on turnover distances revealed significant effects of site and elevation (R² = 0.38, p = 0.001), while a dispersion test confirmed homogeneity of within-group variance (p = 0.679). Mean within-site turnover ranged from 0.68 to 0.81, with no significant differences among sites (Kruskal–Wallis p = 0.406), indicating consistently high compositional variability across the landscape.
+
+# Geospatial Distance Decay and Mantel Test
+
+```{r geospatial-distance-decay, echo = FALSE, warning = FALSE, message = FALSE}
+# Geospatial Distance Decay and Mantel Test
+# --------------------------------------------
+
+# 1. Filter metadata and ZOTU table to match Bray-Curtis community matrix
+ohia_meta <- meta_data |>
+  filter(!str_detect(sample_id, "control|CH|H|KT1")) |>
+  arrange(base::match(sample_id, zotu_df$sample_id))
+
+# 2. Filter ZOTU matrix accordingly
+zotu_df <- zotu_df |> column_to_rownames("sample_id")
+ohia_meta <- ohia_meta |> mutate(sample_id = as.character(sample_id))
+zotu_ids <- rownames(zotu_df)
+# base::intersect(ohia_meta$sample_id, zotu_ids)
+# base::setdiff(ohia_meta$sample_id, zotu_ids)
+zotu_filtered <- zotu_df[ohia_meta$sample_id, ]
+
+# 3. Calculate Bray-Curtis dissimilarity
+
+bray_dist <- vegdist(zotu_filtered, method = "bray")
+
+# 4. Compute geographic distances using longitude and latitude (Haversine in meters)
+library(geosphere)
+geo_coords <- ohia_meta |> 
+  dplyr::select(longitude= coord_y, latitude = coord_x) |> 
+  drop_na(latitude) |>
+  drop_na(longitude)  |> 
+  as.matrix()
+
+geo_dist <- distm(geo_coords, fun = distHaversine)
+rownames(geo_dist) <- ohia_meta$sample_id
+colnames(geo_dist) <- ohia_meta$sample_id
+
+# 5. Extract lower triangle for plotting distance decay
+geo_vals <- geo_dist[lower.tri(geo_dist)]
+bray_vals <- as.matrix(bray_dist)[lower.tri(as.matrix(bray_dist))]
+
+# 6. Fit and summarize linear model
+decay_model <- lm(bray_vals ~ geo_vals)
+summary(decay_model)
+
+```
+
+Community dissimilarity increased significantly with geographic distance (R² = 0.081, p \< 0.0001). While the effect size is modest, this supports a weak but significant distance-decay pattern of arthropod communities across ridges and elevations. Even across small spatial scales, localized turnover contributes to beta diversity.
+
+```{r, manteltest, echo = FALSE, warning = FALSE}
+#compare geographical distance to bray curtis dissimilarity
+
+mantel_result <- mantel(as.dist(geo_dist), bray_dist, method = "pearson", permutations = 9999)
+print(mantel_result)
+
+```
+
+# 📊 Supl Plot: Mantel-test and Distance Decay Plot
+
+```{r distance-decay-plot, echo = FALSE, warning = FALSE}
+
+# 7. create plot 
+# 7.1 Extract lower triangle
+bray_vals <- as.matrix(bray_dist)[lower.tri(bray_dist)]
+geo_vals <- geo_dist[lower.tri(geo_dist)]
+
+# 7.2 Create a data frame for plotting
+dist_decay_df <- data.frame(
+  geo = geo_vals,
+  bray = bray_vals
+)
+
+# 7.3 Fit linear model
+decay_model <- lm(bray ~ geo, data = dist_decay_df)
+lm_r2 <- summary(decay_model)$r.squared
+
+# 7.4 Run Mantel test
+mantel_result <- vegan::mantel(as.dist(geo_dist), bray_dist, permutations = 9999, method = "pearson")
+
+# 7.5 actual Plot
+ggplot(dist_decay_df, aes(x = geo, y = bray)) +
+  geom_point(alpha = 0.5, size = 1.5) +
+  geom_smooth(method = "lm", color = "red", se = FALSE) +
+  annotate("text", x = max(dist_decay_df$geo) * 0.8, y = .5,
+           label = paste0("Mantel r = ", round(mantel_result$statistic, 3),
+                          "\np = ", format.pval(mantel_result$signif, digits = 3),
+                          "\nR² = ", round(lm_r2, 2)),
+           hjust = 0, vjust = 1, size = 4,
+           fontface = "italic", color = "black") +
+  labs(
+    title = "Distance Decay of Community Similarity",
+    x = "Geographic distance (meters)",
+    y = "Bray-Curtis dissimilarity"
+  ) +
+  theme_minimal()
+
+
+# Save in subfolder "figues"
+ggsave(
+  filename = here::here("figures", paste0("distance_decay_", Sys.Date(), ".png")),
+  plot = last_plot(),
+  width = 7,
+  height = 5,
+  dpi = 300
+)
+```
+
+A Mantel test revealed a significant correlation between Bray-Curtis dissimilarity and geographic distance (r = 0.284, p = 0.0001), indicating a moderate but statistically robust distance-decay pattern in arthropod community composition across sampling sites.
+
+This suggests that geographic separation contributes to community turnover, even after accounting for local habitat effects. The result aligns with the idea that dispersal limitation or historical biogeography plays a role in shaping beta diversity along Hawaiian forest gradients.
+
+# Summary initial analyses
+
+This report demonstrates that arthropod communities across Hawaiian forest gradients are shaped by a combination of spatial structure, elevational zonation, and forest composition. Using eDNA-based metabarcoding and a suite of multivariate analyses, we find:
+
+Community composition in ʻōhiʻa forests varies significantly across sites (PERMANOVA R² = 0.21, p = 0.002) and is further influenced by elevation (combined R² = 0.34, p = 0.001).
+
+Tree species identity, when tested in co-occurring sites (e.g., Manana and ʻAiea), does not explain significant variation in community structure (p = 0.895), though NMDS ordinations suggest subtle clustering.
+
+Beta diversity decomposition reveals that community differences are primarily driven by species turnover rather than nestedness, with turnover significantly structured by site and elevation (R² = 0.38, p = 0.001).
+
+Beta-dispersion patterns support consistent within-site heterogeneity and do not confound PERMANOVA results.
+
+Distance–decay patterns indicate a weak but significant effect of geographic distance on community dissimilarity (Mantel r = 0.284, p = 0.0001), suggesting that even over short distances, dispersal limitation or spatial structuring contributes to beta diversity.
+
+Together, these findings highlight the strong role of site-specific conditions and elevation in structuring arthropod communities in Hawaiian forests, while tree species identity plays a secondary role. The integration of turnover-based decomposition and spatial statistics adds ecological depth and supports the use of eDNA as a scalable tool for arthropod biodiversity monitoring across complex landscapes.

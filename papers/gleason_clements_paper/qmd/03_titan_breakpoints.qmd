@@ -1,0 +1,662 @@
+---
+format: html
+editor: visual
+---
+
+```{r}
+source(here::here("papers","gleason_clements_paper","R","00_source.R"))
+
+# install.packages("TITAN2")   # or devtools::install_github("brianstock/TITAN2")
+library(TITAN2)
+
+set.seed(1337)  # for reproducibility
+```
+
+```{r}
+
+# 1) Filter out controls and unwanted sites
+otus <- zotu_df %>%
+  #filter controls
+  filter(!str_detect(sample_id, "control")) %>%
+  #filter hakalau so every sample that starts with "H" or "CH"
+  filter(!str_detect(sample_id, "H|CH")) %>%
+  filter(sample_id %in% meta_data$sample_id) 
+
+#calculate READS for the whole data set
+sum_reads <- sum(otus %>% select(starts_with("zotu")))
+
+#calculate MEAN READS with SE for the whole data set
+mean_reads <- mean(rowSums(otus %>% select(starts_with("zotu")))) 
+
+#calculate SE reads for the whole data set
+se_reads <- sd(rowSums(otus %>% select(starts_with("zotu")))) / sqrt(nrow(otus))
+
+# merge otu table with taxonomy df
+#calculate the 3 most abundant arthropod orders of the data set
+# and give the relative abundance for the top 3 orders
+taxa_summary <- otus %>%
+  select(starts_with("zotu")) %>%
+  summarise(across(everything(), sum)) %>%
+  pivot_longer(everything(), names_to = "zotu", values_to = "abundance") %>%
+  left_join(taxonomy_df %>% 
+              select(zotu_id, phylum, class, order) |> 
+              drop_na(order) |> 
+              #tolower for everything in zotu_id
+              mutate(zotu_id = tolower(zotu_id)),
+            by = c("zotu" = "zotu_id")) %>%
+  group_by(order) %>%
+  summarise(total_abundance = sum(abundance)) %>%
+  arrange(desc(total_abundance)) %>%
+  slice_head(n = 3) |> 
+  mutate(total_read = 1098901) |> 
+  group_by(order) |>
+  summarise(relative_abundance = (total_abundance / total_read) * 100)
+
+
+
+# 2) Build species matrix and gradient
+sp_mat <- otus %>%
+  column_to_rownames("sample_id") %>%
+  select(starts_with("zotu")) %>%
+  as.matrix()
+
+elev <- meta_data %>%
+  filter(sample_id %in% rownames(sp_mat)) %>%
+  arrange(match(sample_id, rownames(sp_mat))) %>%
+  pull(elevation_m)
+
+#calculate samples per ridge
+samples_per_ridge <- meta_data %>%
+  filter(sample_id %in% rownames(sp_mat)) %>%
+  group_by(sample_site) %>%
+  summarise(n = n())
+
+#calculate mean species richness from meta_data
+#omit all controls, hakalau and samples that are not in sp_mat, but also
+#KT1 and KA5
+mean_richness <- meta_data %>%
+  filter(!str_detect(sample_id, "control")) %>%
+  filter(!str_detect(sample_id, "H|CH")) %>%
+  filter(sample_id %in% rownames(sp_mat)) %>%
+  filter(!sample_id %in% c("KT1", "KA5")) %>%
+  summarise(mean_richness = mean(richness), se_richness = sd(richness) / sqrt(n()))
+
+
+# Ensure alignment & no NAs in gradient
+stopifnot(identical(rownames(sp_mat), meta_data %>% 
+                    filter(sample_id %in% rownames(sp_mat)) %>%
+                    arrange(match(sample_id, rownames(sp_mat))) %>% pull(sample_id)))
+ok <- !is.na(elev)
+sp_mat <- sp_mat[ok, , drop = FALSE]
+elev   <- elev[ok]
+
+# Quick diagnostics
+cat("N samples:", nrow(sp_mat), " | N taxa (pre-filter):", ncol(sp_mat), "\n")
+summary(elev)
+
+
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+occ <- colSums(sp_mat > 0)
+keep <- names(occ)[occ >= 3]
+
+cat("N taxa kept (occ >= 3):", length(keep), "\n")
+stopifnot(length(keep) >= 10)  # avoid fragile runs
+
+sp_mat_filt <- sp_mat[, keep]
+sp_mat_filt_pa <- (sp_mat_filt > 0) * 1
+
+# run with bootstrap for reliability
+titan_out <- titan(
+  elev,         # your gradient vector
+  sp_mat_filt,         # your site × taxon matrix
+  minSplt = 5,
+  numPerm = 250,
+  boot = TRUE,
+  nBoot = 500,
+  imax = TRUE,
+  ivTot = FALSE,
+  pur.cut = 0.95,
+  rel.cut = 0.95,
+  ncpus = 1,
+  memory = FALSE,
+  messaging = TRUE
+)
+
+```
+
+```{r}
+
+# define your true limits
+min_e <- min(elev, na.rm=TRUE)
+max_e <- max(elev, na.rm=TRUE)
+
+
+# 1) Grab your summary table
+sumz_df <- titan_out$sumz.cp %>% 
+  as.data.frame() %>% 
+  rownames_to_column("group") %>% 
+  pivot_longer(-group, names_to="q", values_to="elev") %>% 
+  pivot_wider(names_from=q, values_from=elev) %>% 
+  mutate(
+    across(c(`0.05`,`0.50`,`0.95`),
+           ~ pmin(pmax(.x, min_e), max_e)),
+    median = `0.50`,
+    lower  = `0.05`,
+    upper  = `0.95`
+  )
+
+# Show sampling density along the gradient (context for CPs)
+ggplot(data.frame(elev = elev), aes(elev)) +
+  geom_histogram(bins = 20) +
+  labs(x = "Elevation (m)", y = "Samples", title = "Sampling density along elevation")
+
+# 2) Plot
+ggplot(sumz_df, aes(x=group, y=median, ymin=lower, ymax=upper)) +
+  geom_pointrange() +
+  coord_flip() +
+  labs(x=NULL, y="Elevation (m)",
+       title="TITAN community thresholds (capped to data range)")
+```
+
+```{r}
+# 1) Combine your replicate matrices
+bs_unf <- as.data.frame(titan_out$maxSumz) %>% setNames(c("sumz-","sumz+"))
+bs_flt <- as.data.frame(titan_out$maxFsumz) %>% setNames(c("fsumz-","fsumz+"))
+
+bs <- bind_rows(
+  bs_unf  %>% mutate(type="Unfiltered"),
+  bs_flt  %>% mutate(type="Filtered")
+) %>%
+  pivot_longer(-type, names_to="group", values_to="elev")
+
+bs$type <- factor(bs$type, levels = c("Unfiltered", "Filtered"))
+
+
+# 2) Plot
+ggplot(bs, aes(x=group, y=elev, fill=type)) +
+  geom_violin(trim=FALSE, alpha=0.6) +
+  geom_boxplot(width=0.1, outlier.size=0.5) +
+  coord_flip() +
+  labs(
+    x = NULL, 
+    y = "Elevation (m)",
+    fill = NULL,
+    title = "Bootstrap distributions of community change‐points"
+  ) +
+  theme_minimal()
+
+cp_main <- median(bs_unf$`sumz+`, na.rm = TRUE)
+
+```
+
+```{r}
+# Re-use bs from above
+ggplot(bs, aes(x=elev, y=group, fill=type)) +
+  ggridges::geom_density_ridges(alpha=0.6, scale=1.2, rel_min_height=0.01) +
+  labs(
+    x = "Elevation (m)",
+    y = NULL,
+    title = "Density ridges of bootstrap change--points",
+    fill = NULL
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# grab all replicates
+bs2 <- as.data.frame(titan_out$maxSumz) %>% 
+  setNames(c("sumz-","sumz+")) %>%
+  pivot_longer(everything(), names_to="group", values_to="cp")
+
+# keep only in‐range
+bs2_in <- bs2 %>% filter(cp >= min_e & cp <= max_e)
+
+# recompute quantiles
+sumz_df2 <- bs2_in %>%
+  group_by(group) %>%
+  summarize(
+    lower  = quantile(cp, .05),
+    median = quantile(cp, .50),
+    upper  = quantile(cp, .95)
+  )
+
+# then plot as above
+ggplot(sumz_df2, aes(x=group, y=median, ymin=lower, ymax=upper)) +
+  geom_pointrange() +
+  coord_flip() +
+  labs(x=NULL, y="Elevation (m)",
+       title="TITAN community thresholds (capped to data range)")
+
+```
+
+```{r}
+# # 1) Extract sppmax into a data frame with ZOTU names
+# taxa_df <- as.data.frame(titan_out$sppmax) %>%
+#   rownames_to_column("zotu")
+# 
+# # 2) Tidy & filter for only those taxa that passed purity/reliability
+# df_plot <- taxa_df %>%
+#   filter(filter == 1) %>% 
+#   transmute(
+#     zotu,
+#     # choose your breakpoint: raw cp or bootstrap median ("50%")
+#     threshold = `50%`,      
+#     zscore    = zscore,      
+#     direction = if_else(maxgrp == 2, "z+", "z-")
+#   ) %>%
+#   arrange(threshold)
+# 
+# # 3) Plot: thresholds on x, ZOTUs on y, colored by direction, sized by |zscore|
+# ggplot(df_plot, aes(
+#   x    = threshold,
+#   y    = fct_reorder(zotu, threshold),
+#   color= direction,
+#   size = abs(zscore)
+# )) +
+#   geom_point(alpha = 0.8) +
+#   #ggrepel::geom_text_repel(data = df_top, aes(label = zotu), size = 2.5, max.overlaps = Inf)+
+#   scale_color_manual(values = c("z+" = "dodgerblue", "z-" = "firebrick")) +
+#   scale_size_continuous(name = "|z-score|") +
+#   labs(
+#     x     = "Elevation breakpoint (m)",
+#     y     = "ZOTU",
+#     color = "Indicator direction",
+#     title = "TITAN per-taxon change-points"
+#   ) +
+#   theme_minimal() +
+#   theme(
+#     axis.text.y     = element_text(size = 6),
+#     legend.text    = element_markdown(size = 9),
+#     legend.position = "right"
+#   )
+```
+
+```{r}
+# 0) Restart from your original sp_mat
+comm <- sp_mat   # should be samples × taxa
+
+# 1) Inspect what you really have
+class(comm)
+str(comm)
+
+# 2) Coerce to a plain numeric matrix
+comm_mat <- as.matrix(comm)
+storage.mode(comm_mat) <- "numeric"
+
+# 3) Explicitly call vegan's diversity (with MARGIN=1 to do rows)
+shannon <- vegan::diversity(comm_mat, index="shannon", MARGIN=1)
+richness <- vegan::specnumber(comm_mat)  # should work now
+
+# 4) Build your data.frame
+div_df <- data.frame(
+  sample_id = rownames(comm_mat),
+  richness  = richness,
+  shannon   = shannon,
+  stringsAsFactors = FALSE
+)
+
+# 5) Join in metadata
+div_df <- merge(div_df, 
+                as.data.frame(meta_data, stringsAsFactors = FALSE),
+                by = "sample_id", all.x = TRUE)
+
+head(div_df)
+```
+
+# 📊 Plot 8: Titan per-taxon change-points
+
+{#titan2}
+
+```{r}
+# 1) Scatter + smooth of Shannon vs. elevation, colored (or faceted) by tree species
+ggplot(div_df, aes(x = elevation_m, y = shannon.x, color = shortname)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(
+    x     = "Elevation (m)",
+    y     = "Shannon diversity",
+    color = "Host tree",
+    title = "Shannon diversity along elevation by host species"
+  ) +
+  theme_minimal()
+
+# 2) Same for richness
+ggplot(div_df, aes(x = elevation_m, y = richness, color = shortname)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(
+    x     = "Elevation (m)",
+    y     = "ZOTU richness",
+    color = "Host tree",
+    title = "Richness along elevation by host species"
+  ) +
+  theme_minimal()
+
+# 3) Test overall trend with a linear model
+mod1 <- lm(shannon ~ elevation_m, data = div_df)
+summary(mod1)
+
+# 4) Test for differences among hosts (and elevation × host interaction)
+mod2 <- lm(shannon ~ elevation_m * shortname, data = div_df)
+anova(mod2)
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+# --- Run a presence/absence (PA) TITAN as a robustness check ---
+titan_pa <- titan(
+  elev,                 # the gradient vector (elevation in meters), one value per sample
+  sp_mat_filt_pa,       # site × taxon matrix in PRESENCE/ABSENCE (0/1) form
+  minSplt = 5,          # minimum number of samples allowed on either side of a split
+  numPerm = 250,        # permutations to assess significance (community-level tests)
+  boot = TRUE,          # do bootstrap resampling to get CP uncertainty
+  nBoot = 500,          # number of bootstrap replicates
+  imax = TRUE,          # use the location of maximum aggregated z (sum of z) as community CP
+  ivTot = FALSE,        # don't compute total indicator value (saves time/memory)
+  pur.cut = 0.95,       # purity cutoff (taxon direction consistency across bootstraps)
+  rel.cut = 0.95,       # reliability cutoff (taxon occurrence/response strength)
+  ncpus = 1,            # CPUs to use (1 = serial; raise if you want parallel)
+  memory = FALSE,       # set TRUE only if memory becomes a constraint (slower but safer)
+  messaging = TRUE      # print progress messages
+)
+
+# --- Get the community-level change point (CP) for PA run ---
+# titan_pa$maxSumz holds bootstrap CPs for community "sumz" (aggregated positive vs negative z).
+# Columns are the two directions: decreasing assemblage ("sumz-") and increasing assemblage ("sumz+").
+# We convert to a data.frame and name the columns explicitly:
+bs_unf_pa <- as.data.frame(titan_pa$maxSumz) %>% setNames(c("sumz-","sumz+"))
+
+# Take the median CP across bootstrap replicates for the increasing assemblage ("sumz+").
+# This is the point along elevation where the community most strongly *increases*.
+cp_pa <- median(bs_unf_pa$`sumz+`, na.rm = TRUE)
+
+# Print a quick comparison line (will work once cp_main exists; see below).
+cat("Community CP (abundance):", round(cp_main,1), "m | (PA):", round(cp_pa,1), "m\n")
+
+
+# --- Repeat the same extraction for your main (abundance) TITAN run ---
+# titan_out$maxSumz is the abundance-based bootstrap CPs (same structure as above).
+ms <- as.data.frame(titan_out$maxSumz); names(ms) <- c("sumz-","sumz+")
+cp_main <- median(ms$`sumz+`, na.rm = TRUE)   # median CP (increasing assemblage) under abundance
+
+
+# --- (Again) extract CP for the PA run in the same way (functionally identical to above) ---
+# This block duplicates the earlier PA extraction; it’s fine, just redundant.
+ms_pa <- as.data.frame(titan_pa$maxSumz); names(ms_pa) <- c("sumz-","sumz+")
+cp_pa <- median(ms_pa$`sumz+`, na.rm = TRUE)
+
+# Final print: abundance vs PA community CPs side-by-side.
+cat("Community CP (abundance):", round(cp_main,1), "m | (PA):", round(cp_pa,1), "m\n")
+
+```
+
+```{r}
+status <- read.csv(here::here("NIClassify/06_NIClassify_predict.csv")) |> 
+  janitor::clean_names() |> 
+  dplyr::rename(zotu_id = upid) |> 
+  filter(str_detect(zotu_id, "Zotu")) |> 
+  select(zotu_id, status_final = final_status, status_ni = predict)
+
+
+# assuming you have classification_df with zotu → status ("native","introduced")
+df_plot <- as.data.frame(titan_out$sppmax) %>%
+  rownames_to_column("zotu_id") %>%
+  filter(filter > 0) %>% 
+  left_join(status |> 
+              mutate(zotu_id = tolower(zotu_id)), by = "zotu_id") %>%
+  transmute(
+    zotu_id,
+    threshold = `50%`,
+    zscore    = zscore,
+    direction = if_else(maxgrp == 2, "increase", "decline"),   # z+ vs z-%>%
+    status = status_ni) |>
+  left_join(taxonomy_df |>
+              mutate(zotu_id = tolower(zotu_id)), by = "zotu_id") |> 
+  arrange(threshold)
+
+ci_lo <- 400   # 5% cp from sumZ–/fsumZ–
+ci_hi <- 670   # 95% cp from sumZ+/fsumZ+
+
+# counts for facet strip labels
+lab_counts <- df_plot %>% 
+  mutate(direction = factor(direction, levels = c("decline","increase"))) %>%
+  count(direction) %>%
+  mutate(lab = paste0(direction, " (n=", n, ")"))
+lab_map <- setNames(lab_counts$lab, lab_counts$direction)
+
+ggplot(df_plot, aes(
+  x     = threshold,
+  y     = zscore,
+  shape = direction,        # shape encodes response direction    
+  fill = status)) +
+  geom_vline(xintercept = 500, linetype = 2, linewidth = 0.4, alpha = .6) +
+  geom_point(size = 4, alpha = 0.95, color = "black", stroke = 0.25) +
+  geom_text_repel(aes(label = stringr::str_to_title(order)), size = 2.5,
+                  min.segment.length = 0, box.padding = .35, seed = 1) +
+  scale_shape_manual(values = c("increase" = 24, "decline" = 25)) + # 24=triangle up, 25=triangle down
+  annotate("rect", xmin = ci_lo, xmax = ci_hi, ymin = -Inf, ymax = Inf, alpha = .08) +
+  scale_fill_manual(values = c("native"="#377EB8", "introduced"="firebrick", "unknown"="grey50")) +
+  labs(
+    x = "Elevation breakpoint (m)",
+    y = "",
+    shape = "Distribution Changes",
+    fill = "NiClassifier Status"
+  ) +
+  coord_cartesian(expand = T,
+                  xlim = c(300, 750),
+                  ylim = c(4, 6)) +
+  facet_wrap(~ direction, ncol=1, labeller = as_labeller(lab_map)) +
+  theme_bw() +
+  theme(
+    axis.text.y     = element_text(size=6),
+    legend.text     = element_text(size=9),
+    legend.position = "right"
+  ) +
+  guides(
+  fill   = guide_legend(order = 1, override.aes = list(shape = 21, size = 4)),
+  shape  = guide_legend(order = 2, override.aes = list(size = 4, fill = "grey80", color = "black", stroke = 0.25)))
+
+#dynamically safe plot starting with data
+ggsave(here::here("figures/09-13-2025_Fig7_TITAN_per-taxon_change-points.png"), width=6, height=5)
+```
+
+# 📊 Plot 8: Titan per-taxon change-points with 🌲 density
+
+```{r}
+
+# ── axes & CI ──────────────────────────────────────────────────────────────────
+y_min <- 4; y_max <- 6
+ci_lo <- 400; ci_hi <- 670
+
+# host colors (tree species)
+host_cols <- c("ohia" = "#8B0000", "guava" = "goldenrod2")
+
+# facet labels you already built
+lab_counts <- df_plot |>
+  dplyr::count(direction) |>
+  dplyr::mutate(lab = paste0(direction, " (n=", n, ")"))
+lab_map <- setNames(lab_counts$lab, lab_counts$direction)
+
+
+#curves
+# ---- HOST DENSITY CURVES FROM ANCHORS (no Gaussian) ----
+elev_seq <- seq(300, 750, by = 5)
+
+# Strawberry guava: 75% at 300 m → <10% at 600 m → 0% at ≥650 m
+anchors_guava <- tibble(
+  elevation = c(300, 600, 650, 750),
+  density   = c(0.75, 0.09, 0.00, 0.00)
+)
+
+# ʻŌhiʻa: low at 300 m, peak 85% at 620 m, stay high and NOT falling at 750 m (90%)
+anchors_ohia <- tibble(
+  elevation = c(300, 500, 620, 750),
+  density   = c(0.20, 0.55, 0.85, 0.90)
+)
+
+# Monotone interpolation (prevents overshoot) + cap to [0, 0.95]
+interp_host <- function(anchors, grid) {
+  f <- splinefun(anchors$elevation, anchors$density, method = "monoH.FC")
+  dens <- pmin(pmax(f(grid), 0), 0.95)
+  tibble(elevation = grid, density = dens)
+}
+
+ohia_curve  <- interp_host(anchors_ohia, elev_seq)  |> mutate(host = "ohia")
+guava_curve <- interp_host(anchors_guava, elev_seq) |> mutate(host = "guava")
+
+host_density <- bind_rows(ohia_curve, guava_curve)
+
+# Map density (0–0.95) onto the z-score axis (4–6) for plotting background
+host_density <- host_density %>%
+  mutate(y_bg = y_min + density * (y_max - y_min))
+
+# ── icons at curve start/end ───────────────────────────────────────────────────
+# assumes your host_density has columns: elevation, host ∈ {ohia, guava}, y_bg
+icon_paths <- c("ohia" = data_path("images/ohia.png"),
+                "guava"= data_path("images/sberry.png")
+                )
+
+icon_df <- rbind(
+  host_density |>
+    dplyr::group_by(host) |>
+    dplyr::slice_min(elevation, n = 1, with_ties = FALSE) |>
+    dplyr::ungroup() |>
+    dplyr::mutate(img = icon_paths[host],
+                  x = elevation - 10,            # slight left pad
+                  y = y_bg + 0.06),              # nudge above curve
+  host_density |>
+    dplyr::group_by(host) |>
+    dplyr::slice_max(elevation, n = 1, with_ties = FALSE) |>
+    dplyr::ungroup() |>
+    dplyr::mutate(img = icon_paths[host],
+                  x = elevation + 10,            # slight right pad
+                  y = y_bg + 0.06)
+)
+
+# ── plot ───────────────────────────────────────────────────────────────────────
+p <- ggplot() +
+  # CI as two thick lines + reference at 500 m
+  geom_vline(xintercept = ci_lo, colour = "grey30", linewidth = 1.2, alpha = .95) +
+  geom_vline(xintercept = ci_hi, colour = "grey30", linewidth = 1.2, alpha = .95) +
+  geom_vline(xintercept = 500,  linetype = 2,      linewidth = 0.5, alpha = .7) +
+
+  # background areas strictly under each density line
+  geom_ribbon(
+    data = host_density,
+    aes(x = elevation, ymin = y_min, ymax = y_bg, fill = host, group = host),
+    alpha = 0.10, colour = NA, show.legend = FALSE
+  ) +
+  # density outlines (we'll show THESE in the legend)
+  geom_line(
+    data = host_density,
+    aes(x = elevation, y = y_bg, colour = host, group = host),
+    linewidth = 1.05, alpha = 0.95, show.legend = TRUE
+  ) +
+  scale_fill_manual(values = host_cols, guide = "none") +
+  scale_color_manual(
+    values = host_cols,
+    breaks = c("ohia","guava"),
+    labels = c("ʻōhiʻa", "Strawberry guava"),
+    name   = "Tree species density (approx.)",
+    guide  = guide_legend(order = 3, override.aes = list(linetype = 1, linewidth = 1.4))
+  ) +
+
+  # PNG icons at curve ends
+  ggimage::geom_image(
+    data = icon_df,
+    aes(x = x, y = y, image = img),
+    size = 0.12, asp = 1, by = "width", inherit.aes = FALSE
+  ) +
+
+  # NEW fill scale for NIClassify status (to match your legend mock)
+  ggnewscale::new_scale_fill() +
+
+  # TITAN points + labels
+  geom_point(
+    data = df_plot,
+    aes(x = threshold, y = zscore, shape = direction, fill = status),
+    size = 4, alpha = 0.95, colour = "black", stroke = 0.25
+  ) +
+  geom_text_repel(
+    data = df_plot,
+    aes(x = threshold, y = zscore, label = stringr::str_to_title(order)),
+    size = 2.5, min.segment.length = 0, box.padding = .35, seed = 1, show.legend = FALSE
+  ) +
+
+  # legends to mirror your mock
+  scale_fill_manual(
+    values = c("introduced"="firebrick", "native"="#377EB8"),
+    breaks = c("introduced", "native"),
+    name   = "NIClassify status",
+    guide  = guide_legend(
+      order = 1,
+      override.aes = list(shape = 21, size = 5, colour = NA, stroke = 0)  # ← no outline
+    )
+  ) +
+  scale_shape_manual(
+    values = c("decline" = 25, "increase" = 24),  # down / up triangles
+    breaks = c("decline","increase"),
+    name   = "Distribution changes",
+    guide  = guide_legend(
+      order = 2,
+      override.aes = list(size = 5, fill = "grey85", colour = NA, stroke = 0)  # ← no outline
+    )
+  )  +
+
+  coord_cartesian(xlim = c(300, 750), ylim = c(y_min, y_max), expand = TRUE) +
+  labs(x = "Elevation breakpoint (m)", y = "z-score") +
+  facet_wrap(~ direction, ncol = 1, labeller = as_labeller(lab_map)) +
+  theme_bw() +
+  theme(
+    strip.background = element_rect(fill = "grey92", colour = NA),
+    legend.position  = "right",
+    legend.box       = "vertical",
+    legend.text      = element_text(size = 10),
+    legend.title     = element_text(size = 11)
+  ) +
+  # right axis back-calculated to %
+  scale_y_continuous(
+    sec.axis = sec_axis(~ (.-y_min)/(y_max - y_min) * 100,
+                        name = "Tree species density (%)")
+  )
+
+p
+
+ggsave(
+  filename = paste0(format(Sys.Date(), "%m-%d-%Y"), "fig7_titan+density.png"),
+  plot     = p,
+  width    = 12,
+  height   = 8,
+  dpi      = 600,
+  path     = here::here("figures")
+)
+
+```
+
+# 📝 Summary TITAN
+
+TITAN indicates a reproducible community turnover around \~500 m along the elevation gradient, robust to abundance vs presence/absence coding. The convergence of abundance and PA results suggests the breakpoint reflects taxon replacement rather than abundance shifts. In the context of invasion dynamics, this threshold is consistent with a decline of low-elevation assemblages (expected to include more introduced taxa) and an increase of higher-elevation assemblages. A direct enrichment test (direction × invasion status) can formalize this, but the community-level signal already supports an elevation-linked transition.
+
+```{r}
+
+# Use the filtered community bootstrap maxima (fsumz- and fsumz+) as the robust basis
+bs_flt <- as.data.frame(titan_out$maxFsumz) %>%
+  setNames(c("fsumz-", "fsumz+")) %>%
+  tidyr::pivot_longer(everything(), names_to = "group", values_to = "cp_ft")
+
+# Keep only in-range breakpoints
+bs_flt_in <- bs_flt %>% dplyr::filter(cp_ft >= min_e & cp_ft <= max_e)
+
+# 5–95 percent CI in feet, then convert to meters
+ci_ft <- stats::quantile(bs_flt_in$cp_ft, probs = c(0.05, 0.95), na.rm = TRUE)
+band_lo <- as.numeric(ci_ft[1]) 
+band_hi <- as.numeric(ci_ft[2]) 
+
+# Make them visible and clearly typed
+band_lo <- as.numeric(band_lo)
+band_hi <- as.numeric(band_hi)
+
+message(sprintf("TITAN CI band exported: %.1f–%.1f m", band_lo, band_hi))
+```
