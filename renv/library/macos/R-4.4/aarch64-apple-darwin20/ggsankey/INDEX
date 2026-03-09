@@ -1,0 +1,7 @@
+geom_alluvial           geom_alluvial
+geom_alluvial_label     geom_alluvial_label
+geom_sankey             geom_sankey
+geom_sankey_bump        geom_sankey_bump
+geom_sankey_label       geom_sankey_label
+make_long               make_long
+theme_sankey            sankey_themes

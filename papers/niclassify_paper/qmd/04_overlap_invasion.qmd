@@ -1,0 +1,670 @@
+---
+format: html
+editor: visual
+---
+
+```{r}
+source(here::here("papers","niclassify_paper","R","00_source.R"))
+```
+
+```{r}
+
+# Load invasive status predictions from NIClassify + BLAST mapping
+status <- read.csv(here::here("NIClassify/06_NIClassify_predict.csv")) |> 
+  janitor::clean_names() |> 
+  dplyr::rename(zotu_id = upid) |> 
+  filter(str_detect(zotu_id, "Zotu")) |> 
+  select(zotu_id, status_final = final_status, status_ni = predict)
+
+# Load BLAST/IBIS predictions from Excel (manual curation)
+status_blast <- read.xlsx(file.path(legacy_output, "tax_invasive.xlsx"), sheet = "taxonomy")  |> 
+  janitor::clean_names() |> 
+  select(zotu_id, status_genus)
+
+# Combine and clean all invasion status sources
+status <- status |> 
+  left_join(status_blast, by = "zotu_id") |> 
+  dplyr::rename(ibis_status = status_final) |> 
+  # Convert blank strings to NA
+  mutate(across(c(ibis_status, status_ni, status_genus), 
+                ~ ifelse(.x == "", NA_character_, .x))) |> 
+  # Normalize case and rename columns for clarity
+  mutate(
+    Ibis      = tolower(ibis_status), 
+    NiClassify= tolower(status_ni), 
+    Blast     = tolower(status_genus),
+    zotu_id   = tolower(zotu_id)
+  ) |> 
+  select(-contains("status"))  # drop original status columns
+```
+
+# Comparing Invasive Status Predictions vs Blast or Ibis
+
+## 📈 table summary
+
+```{r}
+
+summary_stats <- status |> 
+  #calculate % introduces vs native vs NA for each method 
+  #first pivot longer
+  pivot_longer(cols = c(Ibis, NiClassify, Blast), 
+               names_to = "method", values_to = "status") |>
+  group_by(method, status) |>
+  summarise(count = n(), .groups = "drop") |> 
+  #pivot wider for nicer table
+  pivot_wider(names_from = status, values_from = count, values_fill = 0) |> 
+  dplyr::rename("No information available" = "NA")
+
+
+# Use gt to export a publication-ready summary table
+summary_stats |> 
+  gt() |> 
+  tab_header(title = "Summary of Invasive Status Predictions") |> 
+  cols_label(method = "Prediction Method") |> 
+  fmt_number(columns = everything(), decimals = 0) |> 
+  cols_width(everything() ~ px(150)) |> 
+  tab_spanner(
+    label = "Invasive Status", 
+    columns = c("introduced", "native", "No information available")
+  ) |> 
+  tab_source_note(
+    source_note = "Data obtained through Ibis geolocation API, BLAST mapping paired species lookup &  NIClassify predictions"
+  ) 
+```
+
+# 🌱🌲🌳 Leke Transect Tree Comparison – Cleaned Code Chunk
+
+```{r, Leks-setup}
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. Filter metadata to Leke samples (ʻŌhiʻa, Koa, Guava on Oʻahu)
+# ─────────────────────────────────────────────────────────────────────────────
+meta_leke <- meta_data |> 
+  filter(tolower(island) == "oahu") |> 
+  filter(str_detect(sample_id, "O_|K_|G_")) |>   # O = ʻŌhiʻa, K = Koa, G = Guava
+  select(sample_id, sample_site, commonname)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Convert ZOTU table to long format, join tree metadata
+# ─────────────────────────────────────────────────────────────────────────────
+zotu_long <- zotu_df |>
+  inner_join(meta_leke, by = "sample_id") |> 
+  pivot_longer(cols = starts_with("zotu"), names_to = "zotu", values_to = "count") |> 
+  filter(count > 0) |>             # ← This is key
+  distinct(zotu, commonname) |>    # ← Ensure no duplicate combinations
+  mutate(present = TRUE)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. Build presence/absence matrix per tree species (commonname)
+# ─────────────────────────────────────────────────────────────────────────────
+zotu_presence <- zotu_long |> 
+  pivot_wider(names_from = commonname, values_from = present, values_fill = FALSE) |> 
+  inner_join(status |> select(zotu_id, NiClassify, Blast), by = c("zotu" = "zotu_id")) |> 
+  mutate(
+    NiClassify = tolower(coalesce(NiClassify, "unknown")),
+    Blast      = tolower(coalesce(Blast,      "unknown")),
+    NiClassify = factor(NiClassify, levels = c("native", "introduced", "unknown")),
+    Blast      = factor(Blast,      levels = c("native", "introduced", "unknown"))) 
+
+
+```
+
+# 📊 Plot 3: UpSet plot by BLAST status as example
+
+```{r UpSet-Blast-NIClassify, warning = FALSE, message = FALSE, fig.width=6, fig.height=12}
+# ─────────────────────────────────────────────────────────────────────────────
+# Lekes Transect – UpSet plots colored by invasion status (NIClassify + BLAST)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# 4. Color palettes
+niclassify_colors <- c(native = "#377EB8", introduced = "#E41A1C")
+blast_colors      <- c(native = "#33A02C", introduced = "#B15928")
+
+# 5. Tree-specific colors
+plant_colors <- c(
+  "ʻōhiʻa Lehua"  = "#C1133D",   # ʻōhiʻa Lehua
+  "koa"   = "#8B4513",   # koa
+  "strawberry guava" = "gold"       # strawberry guava
+)
+
+# 6. NIClassify Upset with colored matrix
+ni_leke <- upset(
+  zotu_presence,
+  intersect = c("ʻōhiʻa Lehua", "koa", "strawberry guava"),
+  name = "Shared zOTUs",
+  width_ratio = 0.15,
+
+  # Bottom matrix: colored by tree species
+  matrix = (
+    intersection_matrix(
+      geom = geom_point(shape = "circle filled", size = 3)
+    ) +
+    scale_color_manual(
+      values = plant_colors,
+      guide = guide_legend(override.aes = list(shape = "circle"))
+    )
+  ),
+
+  # Queries: row highlight stripes
+  queries = list(
+    upset_query(set = "ʻōhiʻa Lehua",     fill = plant_colors[["ʻōhiʻa Lehua"]]),
+    upset_query(set = "koa",              fill = plant_colors[["koa"]]),
+    upset_query(set = "strawberry guava", fill = plant_colors[["strawberry guava"]])
+  ),
+
+  # Top barplot: colored by NIClassify with totals
+  base_annotations = list(
+    "Intersection size" = (
+      ggplot(mapping = aes(x = intersection, fill = NiClassify)) +
+        geom_bar(color = "black") +
+        geom_text(
+          aes(label = after_stat(count), group = 1),
+          stat = "count",
+          vjust = -0.4,
+          size = 4,
+          fontface = "bold",
+          color = "black"
+        ) +
+        scale_fill_manual(
+          values = niclassify_colors,
+          name   = "NIClassify",
+          drop   = FALSE
+        ) +
+        labs(x = NULL, y = "Summed zOTUs") +
+        theme_minimal(base_size = 14) +
+        theme(
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = c(0.8, 0.85),
+          legend.justification = c(1, 1),
+          legend.background = element_rect(fill = alpha("white", 0.7), color = NA)
+        )
+    )
+  )
+)
+
+
+#---------------------------------
+# 1. Plot both as stacked barplots with shared matrix
+
+
+
+fig03 <- upset(
+  zotu_presence,
+  intersect = c("ʻōhiʻa Lehua", "koa", "strawberry guava"),
+  name = "Shared zOTUs",
+  width_ratio = 0.15,
+
+  matrix = (
+    intersection_matrix(
+      geom = geom_point(shape = "circle filled", size = 3)
+    ) +
+    scale_color_manual(
+      values = plant_colors,
+      guide = guide_legend(override.aes = list(shape = "circle"))
+    )
+  ),
+
+  queries = list(
+    upset_query(set = "ʻōhiʻa Lehua", fill = plant_colors[["ʻōhiʻa Lehua"]]),
+    upset_query(set = "koa", fill = plant_colors[["koa"]]),
+    upset_query(set = "strawberry guava", fill = plant_colors[["strawberry guava"]])
+  ),
+
+  base_annotations = list(
+
+    # ---------- BLAST panel ----------
+    "NCBI Blastn" = (
+      ggplot(mapping = aes(x = intersection, fill = Blast)) +
+        geom_bar(color = "black") +
+        scale_fill_manual(
+          values = blast_colors,
+          name = "NCBI Blastn",
+          drop = FALSE
+        ) +
+        labs(x = NULL, y = NULL) +
+        theme_minimal(base_size = 14) +
+        theme(
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = "right",
+          legend.justification = c(1, 1),
+          legend.background = element_rect(fill = alpha("white", 0.7), color = NA)
+        )
+    ),
+
+    # ---------- NIClassify panel ----------
+    "NIClassify" = (
+      ggplot(mapping = aes(x = intersection, fill = NiClassify)) +
+        geom_bar(color = "black", width = 0.85) +
+    
+        geom_text(
+          aes(label = after_stat(count), group = 1),
+          stat = "count",
+          vjust = 1.2,          # puts text inside bar
+          size = 4,
+          fontface = "bold",
+          color = "white"
+        ) +
+    
+        scale_fill_manual(
+          values = niclassify_colors,
+          name = "NIClassify",
+          drop = FALSE
+        ) +
+    
+        labs(x = NULL, y = NULL) +
+        theme_minimal(base_size = 14) +
+        theme(
+          axis.text.x  = element_blank(),
+          axis.ticks.x = element_blank()
+        )
+    )
+  )
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 8. Save with ggplot cursive with data MM-DD-YYYY Figure03_classifier
+
+ggsave(
+  filename = paste0(format(Sys.Date(), "%m-%d-%Y"), "_Fig3_Leke_comparison.png"),
+  plot     = fig03,
+  width    = 8,
+  height   = 9,
+  dpi      = 600,
+  path     = here::here("papers/niclassify_paper/outputs/fig_main")
+)
+
+```
+
+UpSet plots showing shared and unique zOTUs across co-occurring native (ʻōhiʻa, koa) and introduced (strawberry guava) trees on Oʻahu. Bars are colored by invasion status as inferred from BLAST matches (top) and NIClassify predictions (bottom).
+
+```{r}
+
+paired_status <- zotu_presence |>
+  filter(!is.na(NiClassify), !is.na(Blast)) |>
+  select(zotu, NiClassify, Blast) |>
+  mutate(
+    NiClassify = factor(NiClassify, levels = c("native", "introduced", "unknown")),
+    Blast      = factor(Blast,      levels = c("native", "introduced", "unknown"))
+  )
+
+paired_long <- paired_status |>
+  pivot_longer(cols = c(NiClassify, Blast), names_to = "classifier", values_to = "status") |>
+  group_by(zotu) |>
+  filter(n_distinct(classifier) == 2) |>  # Each zotu must have both classifiers
+  ungroup() |>
+  mutate(
+    zotu       = factor(zotu),                              # ← fix here
+    classifier = factor(classifier, levels = c("NiClassify", "Blast")),
+    status     = factor(status, levels = c("native", "introduced", "unknown"))
+  )
+
+symm_test <- coin::symmetry_test(
+  status ~ classifier | zotu,
+  data = paired_long,
+  teststat = "quad",
+  distribution = "asymptotic"
+)
+
+symm_test
+
+```
+
+We found a significant difference in invasion status assignments between BLAST and NIClassify across zOTUs (asymptotic symmetry test, χ² = 51.97, df = 1, p = 5.6 × 10⁻¹³), demonstrating that the choice of classifier impacts ecological interpretation of community composition.
+
+# 📊 Supl. Plot : Heatmap of Confusion Matrix
+
+```{r}
+# Calculate confusion matrix
+conf_mat <- zotu_presence |>
+  dplyr::count(NiClassify, Blast) |>
+  mutate(
+    NiClassify = factor(NiClassify, levels = c("native", "introduced", "unknown")),
+    Blast = factor(Blast, levels = c("native", "introduced", "unknown"))
+  )
+
+# Heatmap of the confusion matrix
+conf_mat_plot <- ggplot(conf_mat, aes(x = Blast, y = NiClassify, fill = n)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = n), fontface = "bold", size = 5, color = "black") +
+  scale_fill_gradient(low = "#ffffff", high = "#b2182b", name = "Count") +
+  labs(
+    x = "BLAST Status",
+    y = "NIClassify Status",
+    title = "Disagreement between BLAST and NIClassify"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    axis.title = element_text(face = "bold")
+  )
+
+conf_mat_plot
+
+ggsave(filename = here::here("papers","niclassify_paper","outputs","fig_supp", 
+                             paste0( Sys.Date(),"_","S2_comparison_bold_ncbi", ".png")), 
+       plot = comparison_plot, width = 12, height = 8, dpi = 300)
+
+```
+
+Figure X. Confusion matrix comparing invasion status assignments for zOTUs by BLAST (x-axis) and NIClassify (y-axis) on the Lekes transect. Cell values represent the number of zOTUs assigned to each combination. The majority of assignments are "introduced" by both classifiers, but a considerable number are classified as "native" by NIClassify and "introduced" by BLAST, indicating a significant difference in classifier behavior (symmetry test, p \< 0.001).
+
+```{r}
+
+# Add elevation bands (terciles) directly within meta_data if not already present
+ohia_meta <- meta_data %>%
+  filter(tolower(island) == "oahu",
+         !sample_id %in% c("KT1", "KA5"),
+         shortname == "Ohia") |> 
+  distinct(sample_id, sample_site, elevation_m, elev_band)
+
+
+
+# Merge with ZOTUs and NIClassify status
+plot_meta <- zotu_df %>%
+  inner_join(ohia_meta, by = "sample_id") %>%
+  pivot_longer(-c("sample_id", "elev_band", "sample_site"), names_to = "zotu", values_to = "count") %>%
+  filter(count > 0) %>%
+  distinct(sample_id, zotu) %>%
+  left_join(status %>% select(zotu_id, NiClassify), by = c("zotu" = "zotu_id")) %>%
+  left_join(ohia_meta, by = "sample_id") %>%
+  mutate(
+    NiClassify = factor(
+      if_else(NiClassify == "introduced", "introduced", "native"),
+      levels = c("native", "introduced")
+    ),
+    elev_band = factor(elev_band, levels = c("Low", "Mid", "High"))
+  ) %>%
+  drop_na(NiClassify)
+
+```
+
+# ⛰️ Elevation Bands and Invasion Status across all Oahu ridges
+
+# 📊 Plot 4: Invasion among elevation bands
+
+```{r}
+
+# Count number of unique samples per group
+sample_counts <- plot_meta %>%
+  distinct(sample_id, sample_site, elev_band) %>%
+  group_by(sample_site, elev_band) %>%
+  summarise(sample_n = n(), .groups = "drop")
+
+
+# Summarize
+elev_df <- plot_meta %>%
+  group_by(sample_site, elev_band, NiClassify) %>%
+  summarise(zotus = n_distinct(zotu), .groups = "drop") %>%
+  group_by(sample_site, elev_band) %>%
+  mutate(pct = zotus / sum(zotus)) %>%
+  ungroup()
+
+# Make short names for x-axis labels if needed
+elev_df <- plot_meta %>%
+  group_by(sample_site, elev_band, NiClassify) %>%
+  summarise(zotus = n_distinct(zotu), .groups = "drop") %>%
+  group_by(sample_site, elev_band) %>%
+  mutate(pct = zotus / sum(zotus)) %>%
+  ungroup() %>%
+  left_join(sample_counts, by = c("sample_site", "elev_band")) %>%
+  mutate(
+    x_label = paste0(sample_site, " ", elev_band, " (n=", sample_n, ")")
+  )
+
+
+
+# Explicit order for sites and elevation bands
+x_levels <- elev_df %>%
+  distinct(sample_site, elev_band, x_label) %>%
+  arrange(
+    factor(sample_site, levels = c("Ka'ala", "Schofield-Waikane", "Poamoho", "Manana", "ʻAiea")),
+    factor(elev_band, levels = c("low", "mid", "high"))
+  ) %>%
+  pull(x_label)
+
+elev_df <- elev_df %>%
+  mutate(x_label = factor(x_label, levels = x_levels))
+
+
+# Plot
+invasion_ele <- 
+ggplot(elev_df, aes(x = x_label, y = pct, fill = NiClassify)) +
+  geom_col(width = 0.8, position = "stack", color = "black") +
+  scale_y_continuous(labels = percent_format(accuracy = 1), limits = c(0, 1), expand = c(0, 0)) +
+  scale_fill_manual(
+    values = c(native = "#377EB8", introduced = "#E41A1C"),
+    name   = "NIClassify Status"
+  ) +
+  labs(
+    x     = NULL,
+    y     = "Percent of zOTUs"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+    panel.grid.minor.x = element_blank(),
+    plot.title = element_text(face = "bold"),
+    plot.background  = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA)
+)
+
+
+ggsave(filename = here::here("papers","niclassify_paper","outputs","fig_supp", 
+                             paste0( Sys.Date(),"_","S4_elevation_invasion", ".png")), 
+       plot = invasion_ele, width = 12, height = 8, dpi = 300)
+```
+
+Stacked bar chart showing the percentage of unique zOTUs, classified as native (blue) or introduced (red), within each elevation band—low, mid, and high—across the five Oʻahu ridges: Ka‘ala, Schofield-Waikane, Poamoho, Manana, and ʻAiea. Elevation bands were defined by the 33rd and 67th percentile breaks of sampled elevations for each ridge, with the number of samples per band shown in parentheses on the x-axis (n). The consistently higher proportion of introduced zOTUs at lower elevations—particularly on Manana and ʻAiea—contrasts with a greater native zOTU representation at higher bands, suggesting an elevation-dependent invasion gradient in Oʻahu’s ʻōhiʻa forests.
+
+```{r, glmglm}
+# Build summary: one row per sample_id × site × elevation band
+inv_by_sample <- plot_meta %>%
+  group_by(sample_site, sample_id, elev_band) %>%
+  summarise(
+    introduced = sum(NiClassify == "introduced"),
+    native     = sum(NiClassify == "native"),
+    .groups    = "drop"
+  )
+
+# Add ridge_id for clustering (1:5 for your ridges, order as in your plot)
+inv_by_sample <- inv_by_sample %>%
+  mutate(
+    ridge_id = as.numeric(factor(sample_site, levels = c("Kaʻala", "Schoefield-Waikāne", "Poamoho", "Manana", "ʻAiea")))
+  )
+
+gee2 <- geepack::geeglm(
+  cbind(introduced, native) ~ elev_band,
+  id = ridge_id,
+  data = inv_by_sample,
+  family = binomial,
+  corstr = "exchangeable"
+)
+summary(gee2)
+
+```
+
+We used a binomial Generalized Estimating Equation (GEE) to test the effect of elevation band (low, mid, high) on the proportion of introduced zOTUs, with ridge as the clustering variable.
+
+The model revealed a significant effect of elevation band (Wald χ² = 9.95, df = 2, p = 0.007), with both the mid (estimate = –0.55, p = 0.025) and high (estimate = –0.46, p = 0.0016) elevation bands showing significantly lower odds of introduced zOTUs compared to the low band.
+
+# 📊 Plot 5: UpSet plot of all five ridges (#overlap-invasion2)
+
+```{r}
+
+
+
+# Define your colors
+ridge_colors <- c(
+  "ʻAiea"             = "#E64B35FF",
+  "Kaʻala"            = "#4DBBD5FF",
+  "Manana"            = "#00A087FF",
+  "Poamoho"           = "#3C5488FF",
+  "Schoefield-Waikāne" = "#F39B7FFF"
+)
+
+
+zotu_presence <- plot_meta %>%
+  distinct(zotu, sample_site) %>%
+  mutate(present = TRUE) %>%
+  pivot_wider(names_from = sample_site, values_from = present, values_fill = FALSE) %>%
+  left_join(plot_meta %>% select(zotu, NiClassify) %>% distinct(), by = "zotu")
+
+fig04 <- 
+upset(
+  zotu_presence,
+  intersect_sites <- c("Kaʻala", "Schoefield-Waikāne", "Poamoho", "Manana", "ʻAiea"),
+  name = "Shared zOTUs",
+  width_ratio = 0.15,
+
+  # Bottom matrix: colored by ridge
+  matrix = (
+    intersection_matrix(
+      geom = geom_point(shape = "circle filled", size = 3)
+    ) +
+    scale_color_manual(
+      values = ridge_colors,
+      guide = guide_legend(override.aes = list(shape = "circle"))
+    )
+  ),
+
+  # Queries: row highlight stripes
+   queries = list(
+    upset_query(set = "Kaʻala",              fill = ridge_colors[["Kaʻala"]]),
+    upset_query(set = "Schoefield-Waikāne",  fill = ridge_colors[["Schoefield-Waikāne"]]),
+    upset_query(set = "Poamoho",             fill = ridge_colors[["Poamoho"]]),
+    upset_query(set = "Manana",              fill = ridge_colors[["Manana"]]),
+    upset_query(set = "ʻAiea",               fill = ridge_colors[["ʻAiea"]])
+  ),
+
+  # Top barplot: colored by NIClassify with totals
+  base_annotations = list(
+    "Intersection size" = (
+      ggplot(mapping = aes(x = intersection, fill = NiClassify)) +
+        geom_bar(color = "black") +
+        geom_text(
+          aes(label = after_stat(count), group = 1),
+          stat = "count",
+          vjust = -0.4,
+          size = 3.5,
+          fontface = "bold",
+          color = "black"
+        ) +
+        scale_fill_manual(
+          values = niclassify_colors,
+          name   = "NIClassify",
+          drop   = FALSE
+        ) +
+        labs(x = NULL, y = "Number of zOTUs") +
+        theme_minimal(base_size = 14) +
+        theme(
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = c(0.8, 0.85),
+          legend.justification = c(1, 1),
+          legend.background = element_rect(fill = alpha("white", 0.7), color = NA)
+        )
+    )
+  )
+)
+
+
+ggsave(
+  filename = paste0(format(Sys.Date(), "%m-%d-%Y"), "_Fig4_ridge.png"),
+  plot     = fig04,
+  width    = 8,
+  height   = 8,
+  dpi      = 600,
+  path     = here::here("papers/niclassify_paper/outputs/fig_main")
+)
+```
+
+# 📊 Plot 6: Statistical differences of invasion between tree species on ʻAiea and Manana ridges {#overlap-invasion}
+
+```{r}
+
+# 1) Re-compute per-sample proportions (introduced out of all classified+unclassified)
+prop_df <- zotu_df %>%
+  pivot_longer(-sample_id, names_to="zotu", values_to="count") %>%
+  filter(count > 0) %>%
+  distinct(sample_id, zotu) %>%
+  left_join(
+    meta_data %>% select(sample_id, sample_site, shortname),
+    by = "sample_id"
+  ) %>%
+  filter(
+    sample_site %in% c("ʻAiea","Manana"),
+    shortname   %in% c("Ohia","Koa","Guava")
+  ) %>%
+  left_join(
+    status %>% select(zotu_id, NiClassify) %>% rename(zotu = zotu_id),
+    by = "zotu"
+  ) %>%
+  mutate(
+    NiClassify = coalesce(NiClassify, "unclassified"),
+    NiClassify = factor(NiClassify, levels=c("native","introduced","unclassified"))
+  ) %>%
+  count(sample_id, sample_site, shortname, NiClassify) %>%
+  group_by(sample_id) %>%
+  mutate(total = sum(n)) %>%
+  ungroup() %>%
+  filter(NiClassify=="introduced") %>%
+  transmute(
+    sample_id,
+    sample_site,
+    tree        = recode(shortname,
+                         "Ohia"  = "ʻōhiʻa Lehua",
+                         "Koa"   = "koa",
+                         "Guava" = "strawberry guava"),
+    prop_intro = n / total
+  )
+
+# 2) Define the 3 pair-wise comparisons
+comparisons <- list(
+  c("ʻōhiʻa Lehua","koa"),
+  c("ʻōhiʻa Lehua","strawberry guava"),
+  c("koa","strawberry guava")
+)
+
+# 3) Build the bar + SE plot with significance stars
+ggplot(prop_df, aes(x = tree, y = prop_intro, fill = tree)) +
+  geom_bar(stat="summary", fun="mean", width=0.7, color = "black") +
+  geom_errorbar(stat="summary", fun.data=mean_se, width=0.2) +
+  facet_wrap(~ sample_site, nrow = 1) +
+  scale_y_continuous(
+    labels = percent_format(accuracy=1),
+    limits = c(0,1), breaks = seq(0,1,0.2), expand = c(0,0)
+  ) +
+  scale_fill_manual(values = plant_colors) +
+  stat_compare_means(
+    aes(label = ..p.signif..),
+    method           = "t.test",
+    comparisons      = comparisons,
+    p.adjust.method  = "holm",
+    hide.ns          = FALSE,
+    tip.length       = 0.01
+  ) +
+  labs(
+    x        = "Tree species",
+    y        = "Mean % introduced zOTUs ± SE",
+    fill     = "Tree"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x    = element_text(angle = 25, hjust = 1),
+    legend.position= "none",
+    strip.text     = element_text(face = "bold")
+  )
+```
+
+# Summary invasion status analysis
+
+Data & status integration. We merged NIClassify predictions with curated BLAST/IBIS assignments, normalized case, and treated blanks as NA. Status was summarized per method (native / introduced / unknown) with a gt table. Tree comparisons (Leke transect). Presence/absence per ZOTU across ʻōhiʻa, koa, and guava; intersections visualized with ComplexUpset. Top bars colored by NIClassify or BLAST status. Classifier disagreement. For ZOTUs with both assignments, we tested symmetry of the 2×2 status table (native vs introduced) across classifiers using coin::symmetry_test with ZOTU as a blocking factor. Elevation effects (ʻōhiʻa on Oʻahu). We assigned elevation bands (terciles), computed % introduced per site×band, plotted stacked bars, and fit a binomial GEE (introduced vs native) with ridge as cluster. Ridge overlap. UpSet across five ridges with NIClassify coloring. Tree contrasts within ridges. Mean % introduced per tree, SE bars, pairwise tests with Holm correction (stars plotted).
+
+Results support H2: introduced taxa are more prevalent at lower elevations, with a consistent decline up the gradient.
+
+Combined with your TITAN (\~500 m community breakpoint), this suggests a transition zone where lower-elevation assemblages (richer in introduced taxa) give way to higher-elevation assemblages.
+
+H3 (site effects): UpSet/ridge panels and GEE clustering by ridge indicate ridge/site structure matters beyond elevation alone; we’re not just seeing a smooth cline.

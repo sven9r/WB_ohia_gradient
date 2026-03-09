@@ -1,0 +1,28 @@
+Package: ggsankey
+Type: Package
+Title: Sankey, Alluvial and Sankey Bump Plots
+Version: 0.0.99999
+Author: David Sjoberg
+Maintainer: David Sjoberg <dav.sjob@gmail.com>
+Description: A package that makes it easy to implement sankey, alluvial and sankey bump plots in ggplot2.
+License: MIT + file LICENSE
+URL: https://github.com/davidsjoberg/ggsankey
+BugReports: https://github.com/davidsjoberg/ggsankey/issues
+Encoding: UTF-8
+Imports: ggplot2, dplyr, stringr, purrr, tidyr, forcats, magrittr
+RoxygenNote: 7.3.0
+Suggests: testthat (>= 2.1.0)
+Config/testthat/edition: 2
+RemoteType: github
+RemoteHost: api.github.com
+RemoteRepo: ggsankey
+RemoteUsername: davidsjoberg
+RemoteRef: HEAD
+RemoteSha: b675d0d5144b1b5758d3b2b41e86ceee66a1e071
+GithubRepo: ggsankey
+GithubUsername: davidsjoberg
+GithubRef: HEAD
+GithubSHA1: b675d0d5144b1b5758d3b2b41e86ceee66a1e071
+NeedsCompilation: no
+Packaged: 2025-11-20 22:37:31 UTC; svenweber
+Built: R 4.4.3; ; 2025-11-20 22:37:31 UTC; unix

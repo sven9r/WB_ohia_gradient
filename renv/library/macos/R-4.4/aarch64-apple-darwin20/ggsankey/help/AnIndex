@@ -1,0 +1,12 @@
+%>%	pipe
+geom_alluvial	geom_alluvial
+geom_alluvial_label	geom_alluvial_label
+geom_alluvial_text	geom_alluvial_label
+geom_sankey	geom_sankey
+geom_sankey_bump	geom_sankey_bump
+geom_sankey_label	geom_sankey_label
+geom_sankey_text	geom_sankey_label
+make_long	make_long
+theme_alluvial	theme_sankey
+theme_sankey	theme_sankey
+theme_sankey_bump	theme_sankey

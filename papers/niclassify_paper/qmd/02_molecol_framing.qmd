@@ -1,0 +1,1273 @@
+---
+title: "07_"
+author: "Sven Weber"
+format: html
+editor: visual
+---
+
+```{r setup, include=FALSE warn=FALSE}
+source(here::here("papers","niclassify_paper","R","00_source.R"))
+```
+
+# 📊 Supl Plot : bar chart orders 1
+
+```{r}
+b_taxonomy_df <- taxonomy_df |>
+  #all Nan in all coulmns need to be replaces with a real NA for this
+  dplyr::mutate(
+    dplyr::across(
+      .cols = c("species","genus","family", "order"),
+      .fns = ~ dplyr::na_if(., "Nan")
+    )
+  ) |>
+  # species name with sp. or similar need to be treated as NA
+  dplyr::mutate(
+    dplyr::across(
+      .cols = c("species","genus","family"),
+      .fns = ~ dplyr::case_when(
+        stringr::str_detect(., regex("\\bsp\\b|\\bsp\\.\\b|\\bcf\\b|\\bcf\\.\\b|\\bspp\\b|\\bspp\\.\\b", ignore_case = TRUE)) ~ NA_character_,
+        TRUE ~ .
+      )
+    )
+  ) |>
+  # dplyr::mutate(
+  #   res_rank = dplyr::case_when(
+  #     same_species == "yes"                          ~ "species",
+  #     same_species != "yes" & same_genus  == "yes"   ~ "genus",
+  #     same_genus  != "yes" & same_family == "yes"    ~ "family",
+  #     TRUE                                           ~ "higher_or_none"
+  #   ),
+  
+  # use same threshold instead of using same_species, same_genus, same_family columns
+  # Species: 99, Genus: 97, Family: 90, Order: 85 fill information above with blanks when perc_id is below the threshold
+  
+  dplyr::mutate(
+    res_rank = dplyr::case_when(
+      perc_id >= 99 ~ "species",
+      perc_id >= 97 & perc_id < 99 ~ "genus",
+      perc_id >= 90 & perc_id < 97 ~ "family",
+      TRUE ~ "higher_or_none"),
+     res_rank = factor(res_rank, levels = c("species","genus","family","higher_or_none"))
+   ) |> 
+  #mutate zotu_id to lower for the entries from Zotus1111 to zotus1111
+  dplyr::mutate(
+    zotu_id = stringr::str_to_lower(zotu_id)
+  )
+
+#join meta_oahu and zotu_df to make sure only oahu zOTUs are included
+#first pivot longer zotu_df and then then join zotus
+
+taxonomy_oahu <- zotu_df |>
+  tidyr::pivot_longer(
+    cols = dplyr::starts_with("zotu"),
+    names_to = "zotu_id",
+    values_to = "abundance"
+  ) |>
+  dplyr::inner_join(meta_oahu, by = "sample_id") |> 
+  dplyr::select(sample_id, zotu_id, abundance) |> 
+  dplyr::inner_join(b_taxonomy_df, by = "zotu_id") |> 
+  dplyr::select(-sample_id, -sample_id, -abundance) |> 
+  dplyr::distinct()
+
+
+
+# Panel A1
+figA1 <- taxonomy_oahu |>
+  dplyr::count(res_rank) |>
+  dplyr::mutate(prop = n / sum(n)) |>
+  ggplot2::ggplot(ggplot2::aes(x = res_rank, y = prop)) +
+  ggplot2::geom_col() +
+  ggplot2::scale_y_continuous(labels = scales::percent) +
+  ggplot2::labs(x = "Best BLAST consensus rank", y = "Proportion of zOTUs")
+
+# Panel A2
+figA2 <- taxonomy_oahu |>
+  ggplot2::ggplot(ggplot2::aes(x = res_rank, y = perc_id)) +
+  ggplot2::geom_violin(trim = FALSE) +
+  ggplot2::geom_boxplot(width = 0.2, outlier.size = 0.3) +
+  ggplot2::labs(x = "Best BLAST consensus rank", y = "Top hit percent identity")
+
+figA1 + figA2
+```
+
+# 📊 Supl Plot : details blast results 2
+
+```{r}
+
+blast2tax <- readr::read_tsv(data_path("raw_data/7_ANML.tax.tsv")) |> 
+  rename(zotu_id = query) |> 
+   dplyr::mutate(
+    zotu_id = stringr::str_to_lower(zotu_id)
+  ) |> 
+  dplyr::mutate(
+    dplyr::across(
+      .cols = c("species","genus","family", "order"),
+      .fns = ~ dplyr::na_if(., "Nan")
+    )
+  )
+
+#need to make sure only species from oahu data set are included
+# need to merge with taxonomy_oahu
+
+blast2tax <- blast2tax |>
+  dplyr::inner_join(
+    taxonomy_oahu |> dplyr::select(zotu_id))
+
+
+name_chaos <- blast2tax |>
+  dplyr::group_by(zotu_id) |>
+  dplyr::summarise(
+    n_species_names = dplyr::n_distinct(species[!is.na(species) & species != ""]),
+    mean_perc_id = mean(perc_id, na.rm = TRUE)
+  )
+
+figB1 <- name_chaos |>
+  ggplot2::ggplot(ggplot2::aes(x = n_species_names)) +
+  ggplot2::geom_histogram(binwidth = 1, boundary = 0.5, closed = "right") +
+  ggplot2::labs(x = "Number of distinct species names among BLAST hits",
+                y = "Number of zOTUs") |> 
+  #x axis from 1 to 10 showing each value
+  ggplot2::scale_x_continuous(breaks = 1:10, limits = c(0.5, 10.5))
+
+figB2 <- name_chaos |>
+  ggplot2::ggplot(ggplot2::aes(x = mean_perc_id, y = n_species_names)) +
+  ggplot2::geom_point(alpha = 0.3) +
+  ggplot2::geom_smooth(method = "loess", se = TRUE) +
+  ggplot2::labs(x = "Mean BLAST percent identity",
+                y = "Number of distinct species names") |> 
+  #y axis from 1 to 10 showing each value
+  ggplot2::scale_y_continuous(breaks = 1:10, limits = c(0.5, 10.5))
+
+
+figB1 + figB2
+```
+
+# 📊 Bar plots colored
+
+```{r}
+# color scheme that should indicate usefullness for studies
+# species == a nice green,
+# genus == a lighter green,
+# family == orange
+# higher_or_none == should be alarming but not red because of colorbblindness
+
+color_palette <- c(
+  "species"        = "#2ca02c",
+  "genus"          = "#98df8a",
+  "family"         = "#ff7f0e",
+  "order or higher" = "brown"
+)
+
+figC_NCBI <- taxonomy_oahu |>
+  drop_na(order) |> 
+  dplyr::count(order, res_rank) |>
+  dplyr::group_by(order) |>
+  dplyr::mutate(prop = n / sum(n)) |>
+  dplyr::ungroup() |>
+  mutate(
+    res_rank = factor(res_rank,
+      levels = c("species", "genus", "family", "order or higher")
+    ),
+    order = forcats::fct_rev(forcats::fct_infreq(order))
+  ) |>
+  ggplot(aes(x = order, y = prop, fill = res_rank)) +
+  geom_col(position = position_stack(reverse = TRUE)) +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = color_palette) +
+  labs(x = "Order", y = "Proportion of zOTUs") +
+  guides(fill = "none")
+
+#read newly added BOLD data with the sheet name taxonomy_BOLD (10th Feb 2025) and join with oahu data to make sure only oahu zOTUs are included
+taxonomy_bold <- read.xlsx(here::here("data/ohia_gradient_2026-02-09.xlsx"), sheet = "taxonomy_BOLD") |> 
+  mutate(
+    zotu_id = stringr::str_to_lower(id),.before = "id"
+  ) |> 
+  select(-id)
+
+## bold
+taxonomy_bold_oahu <-  zotu_df |> 
+    tidyr::pivot_longer(
+    cols = dplyr::starts_with("zotu"),
+    names_to = "zotu_id",
+    values_to = "abundance"
+  ) |>
+  dplyr::inner_join(meta_oahu, by = "sample_id") |> 
+  dplyr::select(sample_id, zotu_id, abundance) |> 
+  dplyr::inner_join(taxonomy_bold, by = c("zotu_id")) |> 
+  dplyr::select(-sample_id, -sample_id, -abundance) |> 
+  dplyr::distinct()
+
+figC_BOLD <- taxonomy_bold_oahu |> 
+  dplyr::mutate(
+    selected_level = dplyr::case_when(
+      !is.na(species) ~ "species",
+      is.na(species) & !is.na(genus) ~ "genus",
+      is.na(species) & is.na(genus) & !is.na(family) ~ "family",
+      TRUE ~ "order or higher"
+    ),
+    selected_level = factor(selected_level, levels = res_levels)
+  ) |>
+  dplyr::filter(!is.na(order), order != "NA") |>
+  dplyr::count(order, selected_level) |>
+  dplyr::group_by(order) |>
+  dplyr::mutate(prop = n / sum(n)) |>
+  dplyr::ungroup() |>
+  dplyr::mutate(
+    order = forcats::fct_rev(factor(order))
+  ) |>
+  ggplot2::ggplot(ggplot2::aes(x = order, y = prop, fill = selected_level)) +
+  ggplot2::geom_col(position = ggplot2::position_stack(reverse = TRUE)) +
+  ggplot2::coord_flip() +
+  ggplot2::scale_y_continuous(labels = scales::percent) +
+  ggplot2::scale_fill_manual(values = color_palette, breaks = res_levels, limits = res_levels) +
+  ggplot2::labs(x = "Order", y = "Proportion of zOTUs", fill = "taxonomic resolution", title = "BOLD REFERENCE") +
+  ggplot2::guides(fill = "none")
+
+#read NCBI data processed likeBOLD data with the sheet name taxonomy_comparison (10th Feb 2025) and join with oahu data to make sure only oahu zOTUs are included
+taxonomy_comparison <- read.xlsx(here::here("data/ohia_gradient_2026-02-09.xlsx"), sheet = "taxonomy_comparison") |> 
+  mutate(
+    zotu_id = stringr::str_to_lower(zotu_id)) 
+
+taxonomy_comparison_oahu <-  zotu_df |> 
+    tidyr::pivot_longer(
+    cols = dplyr::starts_with("zotu"),
+    names_to = "zotu_id",
+    values_to = "abundance"
+  ) |>
+  dplyr::inner_join(meta_oahu, by = "sample_id") |> 
+  dplyr::select(sample_id, zotu_id, abundance) |> 
+  dplyr::inner_join(taxonomy_comparison, by = c("zotu_id")) |> 
+  dplyr::select(-sample_id, -sample_id, -abundance) |> 
+  dplyr::distinct()
+
+figC_COMP <- taxonomy_comparison_oahu |> 
+  dplyr::mutate(
+    selected_level = dplyr::case_when(
+      !is.na(species) ~ "species",
+      is.na(species) & !is.na(genus) ~ "genus",
+      is.na(species) & is.na(genus) & !is.na(family) ~ "family",
+      TRUE ~ "order or higher"
+    ),
+    selected_level = factor(selected_level, levels = res_levels)
+  ) |>
+  dplyr::filter(!is.na(order), order != "NA") |>
+  dplyr::count(order, selected_level) |>
+  dplyr::group_by(order) |>
+  dplyr::mutate(prop = n / sum(n)) |>
+  dplyr::ungroup() |>
+  dplyr::mutate(order = forcats::fct_rev(factor(order))) |>
+  ggplot2::ggplot(ggplot2::aes(x = order, y = prop, fill = selected_level)) +
+  ggplot2::geom_col(position = ggplot2::position_stack(reverse = TRUE)) +
+  ggplot2::coord_flip() +
+  ggplot2::scale_y_continuous(labels = scales::percent) +
+  ggplot2::scale_fill_manual(values = color_palette, breaks = res_levels, limits = res_levels) +
+  ggplot2::labs(
+    x = "Order", y = "Proportion of zOTUs",
+    fill = "taxonomic resolution",
+    title = "NCBI REFERENCE"
+  )
+
+
+
+```
+
+# 📉 table comparison
+```{r}
+
+# Load invasive status predictions from NIClassify + BLAST mapping
+status <- read.csv(here::here("NIClassify/06_NIClassify_predict.csv")) |> 
+  janitor::clean_names() |> 
+  dplyr::rename(zotu_id = upid) |> 
+  filter(str_detect(zotu_id, "Zotu")) |> 
+  select(zotu_id, status_final = final_status, status_ni = predict)
+
+# Load BLAST/IBIS predictions from Excel (manual curation)
+status_blast <- read.xlsx(file.path(legacy_output, "tax_invasive.xlsx"), sheet = "taxonomy")  |> 
+  janitor::clean_names() |> 
+  select(zotu_id, status_genus) |> 
+  rename(status_blast = status_genus)
+
+#Load BOLD predictions from Excel (manual curation)
+status_bold <- read.xlsx(file.path(legacy_output, "tax_invasive.xlsx"), sheet = "taxonomy_bold") |> 
+  mutate(
+    zotu_id = stringr::str_to_lower(id),.before = "id"
+  ) |> 
+  select(zotu_id, status_bold = status_genus) |> 
+  #unknown needs to be NA in stauts_bold
+  mutate(
+    status_bold = ifelse(status_bold == "unknown", NA_character_, status_bold)
+  )
+  
+
+# Combine and clean all invasion status sources
+status_comb <- status |> 
+  left_join(status_blast, by = "zotu_id") |> 
+  dplyr::rename(ibis_status = status_final) |> 
+  # Convert blank strings to NA
+  mutate(across(c(ibis_status, status_ni, status_blast), 
+                ~ ifelse(.x == "", NA_character_, .x))) |> 
+    mutate(
+    zotu_id = stringr::str_to_lower(zotu_id)
+  ) |> 
+  left_join(status_bold, by = "zotu_id") |> 
+  # Normalize case and rename columns for clarity
+  mutate(
+    Ibis      = tolower(ibis_status), 
+    NiClassify= tolower(status_ni), 
+    BOLD      = tolower(status_bold),
+    NCBI     = tolower(status_blast),
+    zotu_id   = tolower(zotu_id)
+    
+  ) |> 
+  select(-contains("status"))  # drop original status columns
+
+summary_stats <- status_comb |> 
+  #calculate % introduces vs native vs NA for each method 
+  #first pivot longer
+  pivot_longer(cols = c(Ibis, NiClassify, NCBI, BOLD), 
+               names_to = "method", values_to = "status") |>
+  group_by(method, status) |>
+  summarise(count = n(), .groups = "drop") |> 
+  #pivot wider for nicer table
+  pivot_wider(names_from = status, values_from = count, values_fill = 0) |> 
+  dplyr::rename("No information available" = "NA")
+
+
+# Use gt to export a publication-ready summary table
+summary_stats |> 
+  gt() |> 
+  tab_header(title = "Summary of Invasive Status Predictions") |> 
+  cols_label(method = "Prediction Method") |> 
+  fmt_number(columns = everything(), decimals = 0) |> 
+  cols_width(everything() ~ px(150)) |> 
+  tab_spanner(
+    label = "Invasive Status", 
+    columns = c("introduced", "native", "No information available")
+  ) |> 
+  tab_source_note(
+    source_note = "Data obtained through Ibis geolocation API, BLAST mapping paired species lookup &  NIClassify predictions"
+  ) 
+
+#save the table as a png file using gtsave recursive with date in the name starting with date_T1_title
+
+gtsave(
+   summary_stats |> 
+    gt() |> 
+    tab_header(title = "Summary of Invasive Status Predictions") |> 
+    cols_label(method = "Prediction Method") |> 
+    fmt_number(columns = everything(), decimals = 0) |> 
+    cols_width(everything() ~ px(150)) |> 
+    tab_spanner(
+      label = "Invasive Status", 
+      columns = c("introduced", "native", "No information available")
+    ) |> 
+    tab_source_note(
+      source_note = "Data obtained through Ibis geolocation API, BLAST mapping paired species lookup &  NIClassify predictions"
+    ), 
+  filename = here::here("papers","niclassify_paper","outputs","fig_main",
+                         paste0(Sys.Date(),"_","T1_invasive_status_summary_table", ".png"))
+)
+
+
+gtsave(summary_stats |> 
+  gt() |> 
+  tab_header(title = "Summary of Invasive Status Predictions") |> 
+  cols_label(method = "Prediction Method") |> 
+  fmt_number(columns = everything(), decimals = 0) |> 
+  cols_width(everything() ~ px(150)) |> 
+  tab_spanner(
+    label = "Invasive Status", 
+    columns = c("introduced", "native", "No information available")
+  ) |> 
+  tab_source_note(
+    source_note = "Data obtained through Ibis geolocation API, BLAST mapping paired species lookup &  NIClassify predictions"
+  ), filename = here::here("papers","niclassify_paper","outputs","tables", "invasive_status_summary.png"))
+
+
+
+
+```
+
+
+# Summarized classiier
+```{r}
+comparison_summary <- taxonomy_comparison_oahu |> 
+   select(zotu_id, order, family, genus, species, selected_level) |> 
+   group_by(zotu_id) |> 
+  #mutate and give the whole columns a prefix to make sure we can distinguish between NCBI and BOLD results in the final summary table
+  rename_with(~ paste0("NCBI_", .x), -zotu_id) 
+
+  
+
+BOLD_summary <- taxonomy_bold |> 
+  select(zotu_id, order, family, genus, species, selected_level) |>
+  group_by(zotu_id) |> 
+  #mutate and give the whole columns a prefix to make sure we can distinguish between NCBI and BOLD results in the final summary table
+  rename_with(~ paste0("BOLD_", .x), -zotu_id)
+
+# Join the two summaries to compare NCBI and BOLD results and check if they are the same, or different, also need to added if NCBI or BOLD has missing information for the same zotu_id
+
+
+# Step A. Define an expanded rank map
+level_rank <- c(
+  higher = 0L,   # catch-all for anything above order if you use it
+  phylum = 0L,
+  class  = 0L,
+  order  = 1L,
+  family = 2L,
+  genus  = 3L,
+  species = 4L
+)
+
+rank_or_zero <- function(x) {
+  if (is.na(x) || !(x %in% names(level_rank))) 0L else unname(level_rank[[x]])
+}
+#This keeps your “4 ranks” as the meaningful part (1–4) while allowing coarser calls to be “not missing”.
+
+#Step B. Compare only the 4 rank columns, but handle coarser levels correctly
+tax_ranks <- c("order","family","genus","species")
+
+total_summary <- comparison_summary |>
+  left_join(BOLD_summary, by = "zotu_id") |>
+  mutate(
+    across(c(all_of(paste0("NCBI_", tax_ranks)),
+             all_of(paste0("BOLD_", tax_ranks))),
+           ~ str_trim(.) |> na_if("") |> na_if("Nan") |> str_replace_all("\\s+"," "))
+  ) |>
+  rowwise() |>
+  mutate(
+    ncbi_r = rank_or_zero(NCBI_selected_level),
+    bold_r = rank_or_zero(BOLD_selected_level),
+
+    # missing = truly no level at all (NA), not "phylum/class/higher"
+    ncbi_missing = is.na(NCBI_selected_level),
+    bold_missing = is.na(BOLD_selected_level),
+
+    # if both are at least order-or-better, we can compare at shared rank depth
+    shared_r = min(ncbi_r, bold_r),
+
+    conflict_at = {
+      ranks_to_check <- tax_ranks[c(1L,2L,3L,4L) <= shared_r]  # only ranks <= shared depth
+      first_conflict <- NA_character_
+      for (rk in ranks_to_check) {
+        n <- get(paste0("NCBI_", rk))
+        b <- get(paste0("BOLD_", rk))
+        if (!is.na(n) && !is.na(b) && n != b) { first_conflict <- rk; break }
+      }
+      first_conflict
+    },
+
+    same_lineage_shared = is.na(conflict_at),
+    exact_match = same_lineage_shared && (ncbi_r == bold_r)
+  ) |>
+  ungroup() |>
+  mutate(
+    comparison_result = case_when(
+      ncbi_missing & bold_missing ~ "Both missing",
+      ncbi_missing & !bold_missing ~ "NCBI missing",
+      !ncbi_missing & bold_missing ~ "BOLD missing",
+
+      # both exist but at least one is above-order (rank 0): cannot compare lineage using your 4 columns
+      (ncbi_r == 0L | bold_r == 0L) ~ "Coarser than order (not comparable)",
+
+      !is.na(conflict_at) ~ paste0("Conflict at ", conflict_at),
+      exact_match ~ "Exact match",
+      same_lineage_shared & (ncbi_r != bold_r) ~ "Same lineage (Order and lower)\n different resolution",
+      TRUE ~ "Unclear"
+    ),
+    better_classifier = case_when(
+      comparison_result == "Both missing" ~ "Both missing",
+      comparison_result == "NCBI missing" ~ "BOLD better",
+      comparison_result == "BOLD missing" ~ "NCBI better",
+      comparison_result == "Exact match" ~ "Both same",
+
+      comparison_result == "Same lineage (Order and lower)\n different resolution" ~ case_when(
+        ncbi_r > bold_r ~ "NCBI better",
+        bold_r > ncbi_r ~ "BOLD better",
+        TRUE ~ "Both same"
+      ),
+
+      comparison_result == "Coarser than order (not comparable)" ~ case_when(
+        ncbi_r > bold_r ~ "NCBI better",
+        bold_r > ncbi_r ~ "BOLD better",
+        TRUE ~ "Both coarse"
+      ),
+
+      str_detect(comparison_result, "^Conflict at") ~ "Conflict",
+      TRUE ~ NA_character_
+    )
+  )
+
+
+#figure that shows general match missmatch between ncbi and bold
+#keep which classifier is better so we can color it 
+fig1_df <- total_summary |>
+  mutate(
+    comparison_result = fct_relevel(
+      factor(comparison_result),
+      "Exact match",
+      "Conflict at species",
+      "Conflict at genus",
+      "Conflict at family",
+      "Conflict at order",
+      "Same lineage (Order and lower)\n different resolution",
+      "Coarser than order (not comparable)",
+      "NCBI missing",
+      "BOLD missing",
+      "Both missing",
+      "Unclear"
+    ),
+    comparison_result = fct_drop(comparison_result),
+    better_classifier = fct_drop(factor(better_classifier))
+  ) |>
+  count(comparison_result, better_classifier, name = "n") |>
+  group_by(comparison_result) |>
+  mutate(
+    prop_within_result = n / sum(n)   # % of classifiers inside this category
+  ) |>
+  ungroup() |>
+  mutate(
+    prop_overall = n / sum(n)         # % of total dataset
+  )
+
+fig1_df <- fig1_df |>
+  mutate(
+    better_classifier = case_when(
+      is.na(better_classifier) ~ "Tie",
+      str_detect(str_to_lower(better_classifier), "ncbi") ~ "NCBI",
+      str_detect(str_to_lower(better_classifier), "bold") ~ "BOLD",
+      str_detect(str_to_lower(better_classifier), "tie|equal|same|both") ~ "Tie",
+      TRUE ~ "Tie"
+    ),
+    better_classifier = factor(better_classifier, levels = c("NCBI","BOLD","Tie"))
+  )
+
+
+p1 <- ggplot(fig1_df, aes(x = comparison_result, y = prop_overall, fill = better_classifier)) +
+  geom_col(color = "white", linewidth = 0.2) +
+  scale_fill_manual(
+    values = c("NCBI" = "#20558a", "BOLD" = "orange", "Tie" = "grey30"),
+    name = "better classifier"
+  ) +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(
+    x = NULL,
+    y = "Proportion of ZOTUs",
+    title = ""
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 35, hjust = 1),
+    plot.title = element_text(face = "bold")
+  )
+
+p1
+
+```
+
+# 📊 Supl Plot 2 and 3: Which database yields higher taxonomic resolution?
+```{r}
+
+comparison_plot <- 
+(figC_BOLD + figC_COMP) +
+   plot_layout(guides = "collect")  +
+   plot_annotation(tag_levels = "A", tag_suffix = ")") & 
+   theme(legend.position = "bottom",
+        plot.tag = element_text(size = 16))
+
+#ggsave recursive with date in the name
+ggsave(filename = here::here("papers","niclassify_paper","outputs","fig_supp", 
+                             paste0( Sys.Date(),"_","S2_comparison_bold_ncbi", ".png")), 
+       plot = comparison_plot, width = 12, height = 8, dpi = 300)
+
+comparison_plot2 <- 
+p1 +
+   plot_layout(guides = "collect")
+
+ggsave(filename = here::here("papers","niclassify_paper","outputs","fig_supp", 
+                             paste0( Sys.Date(),"_","S3_comparison_summary", ".png")), 
+       plot = comparison_plot2, width = 6, height = 6, dpi = 300)
+
+```
+
+```{r}
+
+fig2_df <- total_summary |>
+  filter(
+    !comparison_result %in% c("Both missing", "NCBI missing", "BOLD missing"),
+    comparison_result != "Coarser than order (not comparable)"
+  ) |>
+  mutate(
+    # make labels publication-safe: "better" -> "higher resolution"
+    resolution_winner = case_when(
+      better_classifier == "NCBI better" ~ "NCBI higher resolution",
+      better_classifier == "BOLD better" ~ "BOLD higher resolution",
+      better_classifier == "Both same" ~ "Same resolution",
+      TRUE ~ "Conflict"
+    ),
+    resolution_winner = fct_relevel(
+      factor(resolution_winner),
+      "NCBI higher resolution",
+      "BOLD higher resolution",
+      "Same resolution",
+      "Conflict"
+    )
+  ) |>
+  count(resolution_winner, name = "n") |>
+  mutate(prop = n / sum(n))
+
+p2 <- ggplot(fig2_df, aes(x = resolution_winner, y = prop)) +
+  geom_col() +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(
+    x = NULL,
+    y = "Proportion of comparable ZOTUs",
+    title = "Which database yields higher taxonomic resolution?"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 20, hjust = 1),
+    plot.title = element_text(face = "bold")
+  )
+
+
+p2 + p1
+```
+
+
+# 📊 Figure 2 Sankey
+
+## 📊 Sankey Ecology based on BLAST PANEL (A)
+
+```{r}
+# Load invasive status predictions from NIClassify + BLAST mapping
+status <- read.csv(here::here("NIClassify/06_NIClassify_predict.csv")) |> 
+  janitor::clean_names() |> 
+  dplyr::rename(zotu_id = upid) |> 
+  filter(str_detect(zotu_id, "Zotu")) |> 
+  select(zotu_id, status_final = final_status, status_ni = predict)
+
+# Load BLAST/IBIS predictions from Excel (manual curation)
+status_blast <- read.xlsx(file.path(legacy_output, "tax_invasive.xlsx"), sheet = "taxonomy") |> 
+  janitor::clean_names() |> 
+  select(zotu_id, status_genus)
+
+
+
+# Combine and clean all invasion status sources
+status <- status |> 
+  left_join(status_blast, by = "zotu_id") |> 
+  dplyr::rename(ibis_status = status_final) |> 
+  # Convert blank strings to NA
+  mutate(across(c(ibis_status, status_ni, status_genus), 
+                ~ ifelse(.x == "", NA_character_, .x))) |> 
+  # Normalize case and rename columns for clarity
+  mutate(
+    Ibis      = tolower(ibis_status), 
+    NiClassify= tolower(status_ni), 
+    Blast     = tolower(status_genus),
+    zotu_id   = tolower(zotu_id)
+  ) |> 
+  select(-contains("status"))  # drop original status columns
+
+# DONT DELETE NEEDED
+guild_from_order_ok <- c(
+  "Araneae",          # predators
+  "Isopoda",          # detritivores
+  "Trombidiformes",   # detritivores / microbivores
+  "Sarcoptiformes",   # detritivores / microbivores
+  "Mesostigmata",     # parasites / predators
+  "Psocoptera",       # plant-associated (sap/lichen)
+  "Diplopoda",        # detritivors
+  "Chilopoda",         # predators
+  "Entomobryomorpha"  # detrivors
+)
+
+
+sankey_taxonomy_df <- b_taxonomy_df |>
+    mutate(
+    guild_possible = order %in% guild_from_order_ok
+  ) |> 
+  mutate(
+    # nicer labels for BLAST resolution
+    res_rank = recode(
+      res_rank,
+      "species"        = "Species-level",
+      "genus"          = "Genus-level",
+      "family"         = "Family-level",
+      "higher_or_none" = "Order-or-higher"
+    ),
+    res_rank = factor(
+      res_rank,
+      levels = c("Species-level", "Genus-level",
+                 "Family-level", "Order-or-higher")
+    ),
+
+    # "real" name, not just "Genus sp."
+    fine_name = !is.na(species) & !grepl(" sp\\.?$", species),
+
+    eco_scope_blast = case_when(
+      res_rank %in% c("Species-level", "Genus-level") & fine_name ~
+        "Fine-scale (species/genus)",
+      guild_possible ~ "Coarse guild only",   # from our previous step
+      TRUE           ~ "No ecological inference"
+    ),
+    eco_scope_blast = factor(
+      eco_scope_blast,
+      levels = c("Fine-scale (species/genus)",
+                 "Coarse guild only",
+                 "No ecological inference")
+    )
+  )
+```
+
+```{r}
+
+# 1. Flow table ---------------------------------------------------------
+
+flows_eco <- sankey_taxonomy_df |>
+  filter(!is.na(res_rank), !is.na(eco_scope_blast)) |>
+  dplyr::count(res_rank, eco_scope_blast, name = "value")
+
+# 2. Nodes with explicit group labels ----------------------------------
+
+nodes_ecology <- tibble(
+  name = factor(c(
+    "Species-level",
+    "Genus-level",
+    "Family-level",
+    "Order-or-higher",
+    "Fine-scale (species/genus)",
+    "Coarse guild only",
+    "No ecological inference"
+  ), levels = c(
+    "Species-level",
+    "Genus-level",
+    "Family-level",
+    "Order-or-higher",
+    "Fine-scale (species/genus)",
+    "Coarse guild only",
+    "No ecological inference"
+  )) 
+) |> 
+  mutate(
+    group = case_when(
+      name == "Species-level"              ~ "rank_species",
+      name == "Genus-level"                ~ "rank_genus",
+      name == "Family-level"               ~ "rank_family",
+      name == "Order-or-higher"            ~ "rank_higher",
+      name == "Fine-scale (species/genus)" ~ "eco_fine",
+      name == "Coarse guild only"          ~ "eco_guild",
+      name == "No ecological inference"    ~ "eco_none",
+      TRUE                                 ~ "other"
+    )
+)
+
+    
+
+# 3. Links grouped by eco use case -------------------------------------
+
+links_ecology <- flows_eco |>
+  mutate(
+    source = match(as.character(res_rank), as.character(nodes$name)) - 1,
+    target = match(as.character(eco_scope_blast), as.character(nodes$name)) - 1,
+    group  = case_when(
+      eco_scope_blast == "Fine-scale (species/genus)" ~ "eco_fine",
+      eco_scope_blast == "Coarse guild only"          ~ "eco_guild",
+      eco_scope_blast == "No ecological inference"    ~ "eco_none"
+    )
+  ) |>
+  select(source, target, value, group)
+
+# sanity check:
+unique(nodes_ecology$group)
+
+# 4. Colour scale: shared colors for matching rank/eco pairs ----------
+
+colourJS <- networkD3::JS("
+  d3.scaleOrdinal()
+    .domain([
+      'rank_species',
+      'rank_genus',
+      'rank_family',
+      'rank_higher',
+      'eco_fine',
+      'eco_guild',
+      'eco_none'
+    ])
+    .range([
+      '#2ca02c',  // rank_species (species)
+      '#98df8a',  // rank_genus   (genus)
+      '#ff7f0e',  // rank_family  (family)
+      'brown',    // rank_higher  (higher_or_none)
+      '#98df8a',  // eco_fine     (Fine-scale)
+      '#ff7f0e',  // eco_guild    (Coarse guild)
+      'brown'     // eco_none     (No ecology)
+    ])
+")
+
+# 5. Sankey ------------------------------------------------------------
+
+sankey_eco <- sankeyNetwork(
+  Links       = links_ecology,
+  Nodes       = nodes_ecology,
+  Source      = "source",
+  Target      = "target",
+  Value       = "value",
+  NodeID      = "name",
+  NodeGroup   = "group",
+  LinkGroup   = "group",
+  colourScale = colourJS,
+  fontSize    = 24,
+  nodeWidth   = 34,
+  sinksRight  = TRUE,
+  iterations  = 0
+)
+
+
+sankey_eco
+
+
+
+
+
+# 1) Save the widget as an HTML file
+eco_html <- here("figures", "sankey_eco.html")
+htmlwidgets::saveWidget(
+  widget = sankey_eco,
+  file   = eco_html,
+  selfcontained = TRUE
+)
+
+# 2) Take a PNG snapshot of that HTML
+
+library(webshot2)
+png_file <- here("figures", "sankey_eco.png")
+
+webshot2::webshot(
+  url    = eco_html,
+  file   = png_file,
+  vwidth = 1200,   # tweak size as needed
+  vheight = 700,
+  zoom   = 2       # higher zoom = higher resolution
+)
+
+```
+
+## 📊 Sankey trust based on BLAST (PANEL B)
+
+```{r}
+# Load manual BLAST trust assignments
+status_blast <- read.xlsx(file.path(legacy_output, "tax_invasive.xlsx"), sheet = "taxonomy") |> 
+  janitor::clean_names() |> 
+  select(zotu_id, trust) |> 
+  mutate(trust = case_when(
+    trust == "yes" ~ "trustworthy",
+    trust == "no"  ~ "not usable",
+    TRUE           ~ NA_character_
+  )) |> 
+  mutate(zotu_id = tolower(zotu_id))
+
+# Merge into taxonomy table
+taxonomy_trust <- sankey_taxonomy_df |> 
+  left_join(status_blast, by = "zotu_id") |>
+  filter(!is.na(res_rank), !is.na(trust))  # exclude missing data
+
+# Count flow values
+flows_trust <- taxonomy_trust |>
+  dplyr::count(res_rank, trust, name = "value")
+
+# Define nodes for Sankey
+nodes_trust <- tibble(
+  name = c(
+    "Species-level",
+    "Genus-level",
+    "Family-level",
+    "Order-or-higher",
+    "Trustworthy ecological info",
+    "Not usable or misleading"
+  ),
+  group = c(
+    "rank_species", "rank_genus", "rank_family", "rank_higher",
+    "trust_yes", "trust_no"
+  )
+)
+
+# Build links (match source and target to node index)
+links_trust <- flows_trust |> 
+  mutate(
+    source = match(res_rank, nodes_trust$name) - 1,
+    target = match(
+      case_when(
+        trust == "trustworthy" ~ "Trustworthy ecological info",
+        trust == "not usable"  ~ "Not usable or misleading"
+      ),
+      nodes_trust$name
+    ) - 1,
+    group = ifelse(trust == "trustworthy", "trust_yes", "trust_no")
+  ) |> 
+  select(source, target, value, group)
+
+# Define color palette (green for trusted, grey for omitted)
+colourJS_trust <- networkD3::JS("
+  d3.scaleOrdinal()
+    .domain([
+      'rank_species',
+      'rank_genus',
+      'rank_family',
+      'rank_higher',
+      'trust_yes',
+      'trust_no'
+    ])
+    .range([
+      '#2ca02c',  // species
+      '#98df8a',  // genus
+      '#ff7f0e',  // family
+      'brown',    // order or higher
+      '#2ca02c',  // trustworthy
+      '#bdbdbd'   // not usable
+    ])
+")
+
+# Create Sankey plot
+sankey_trust <- sankeyNetwork(
+  Links       = links_trust,
+  Nodes       = nodes_trust,
+  Source      = "source",
+  Target      = "target",
+  Value       = "value",
+  NodeID      = "name",
+  NodeGroup   = "group",
+  LinkGroup   = "group",
+  colourScale = colourJS_trust,
+  fontSize    = 24,
+  nodeWidth   = 34,
+  sinksRight  = TRUE,
+  iterations  = 0
+  )
+
+# Show the plot
+sankey_trust
+
+# Save HTML + PNG
+trust_html <- here("figures", "sankey_trust.html")
+htmlwidgets::saveWidget(sankey_trust, trust_html, selfcontained = TRUE)
+
+webshot2::webshot(
+  url    = trust_html,
+  file   = here("figures", "sankey_trust.png"),
+  vwidth = 1200,
+  vheight = 700,
+  zoom   = 2
+)
+
+```
+
+## 📊 Sankey native non native BLAST (PANEL C)
+
+```{r}
+
+# Load status table from BLAST
+status_blast <- read.xlsx(file.path(legacy_output, "tax_invasive.xlsx"), sheet = "taxonomy") |>
+  janitor::clean_names() |>
+  select(zotu_id, status_genus) |> 
+  mutate(status_blast = case_when(
+    status_genus %in% c("native", "Native") ~ "Native",
+    status_genus %in% c("introduced", "Introduced") ~ "Introduced",
+    TRUE ~ "No information"
+  )) |> 
+  select(zotu_id, status_blast) |> 
+  mutate(zotu_id = tolower(zotu_id))
+
+# Merge into taxonomy table
+blast_df <- sankey_taxonomy_df |> 
+  left_join(status_blast, by = "zotu_id") |> 
+  filter(!is.na(res_rank), !is.na(status_blast)) |>
+  mutate(
+    res_rank = recode(
+      res_rank,
+      "species" = "Species-level",
+      "genus"   = "Genus-level",
+      "family"  = "Family-level",
+      "higher_or_none" = "Order-or-higher"
+    ),
+    res_rank = factor(res_rank, levels = c("Species-level", "Genus-level", "Family-level", "Order-or-higher")),
+    status_blast = factor(status_blast, levels = c("Native", "Introduced", "No information"))
+  )
+
+# Create flow table
+flows_blast <- blast_df |> 
+  dplyr::count(res_rank, status_blast, name = "value")
+
+# Define node list
+nodes_blast <- tibble(
+  name = c(
+    "Species-level",
+    "Genus-level",
+    "Family-level",
+    "Order-or-higher",
+    "Native",
+    "Introduced",
+    "No information"
+  ),
+  group = c(
+    "rank_species", "rank_genus", "rank_family", "rank_higher",
+    "status_native", "status_introduced", "status_unknown"
+  )
+)
+
+# Define links
+links_blast <- flows_blast |> 
+  mutate(
+    source = match(res_rank, nodes_blast$name) - 1,
+    target = match(status_blast, nodes_blast$name) - 1,
+    group = case_when(
+      status_blast == "Native" ~ "status_native",
+      status_blast == "Introduced" ~ "status_introduced",
+      TRUE ~ "status_unknown"
+    )
+  ) |>
+  select(source, target, value, group)
+
+# Color scale
+colourJS_blast <- networkD3::JS("
+  d3.scaleOrdinal()
+    .domain([
+      'rank_species', 'rank_genus', 'rank_family', 'rank_higher',
+      'status_native', 'status_introduced', 'status_unknown'
+    ])
+    .range([
+      '#2ca02c',  // species
+      '#98df8a',  // genus
+      '#ff7f0e',  // family
+      'brown',    // order+
+      '#33A02C',  // native
+      '#B15928',  // introduced
+      '#bdbdbd'   // unknown
+    ])
+")
+
+# Create Sankey
+sankey_blast <- sankeyNetwork(
+  Links = links_blast,
+  Nodes = nodes_blast,
+  Source = "source",
+  Target = "target",
+  Value = "value",
+  NodeID = "name",
+  NodeGroup = "group",
+  LinkGroup = "group",
+  colourScale = colourJS_blast,
+  fontSize    = 24,
+  nodeWidth   = 34,
+  sinksRight  = TRUE,
+  iterations  = 0
+)
+
+sankey_blast
+
+
+# 1) Save the widget as an HTML file
+blast_html <- here("figures", "sankey_blast.html")
+htmlwidgets::saveWidget(
+  widget = sankey_blast,
+  file   = blast_html,
+  selfcontained = TRUE
+)
+
+# 2) Take a PNG snapshot of that HTML
+
+library(webshot2)
+png_file <- here("figures", "sankey_blast.png")
+
+webshot2::webshot(
+  url    = blast_html,
+  file   = png_file,
+  vwidth = 1200,   # tweak size as needed
+  vheight = 700,
+  zoom   = 2       # higher zoom = higher resolution
+)
+
+```
+
+## 📊 Sankey native non native NiClassify (Panel D)
+
+```{r}
+
+# Make sure status is loaded and cleaned
+status <- read.csv(here::here("NIClassify/06_NIClassify_predict.csv")) |> 
+  janitor::clean_names() |> 
+  dplyr::rename(zotu_id = upid) |> 
+  filter(str_detect(zotu_id, "Zotu")) |> 
+  dplyr::select(zotu_id, status_ni = predict) |> 
+  mutate(zotu_id = tolower(zotu_id))
+
+# Merge with taxonomy
+taxonomy_ni <- sankey_taxonomy_df |>
+  left_join(status, by = "zotu_id") |> 
+  mutate(
+    status_ni = case_when(
+      status_ni %in% c("native", "Native")         ~ "native",
+      status_ni %in% c("introduced", "Introduced") ~ "introduced",
+      TRUE                                         ~ "uncertain"
+    ),
+    res_rank = factor(res_rank, levels = c("Species-level", "Genus-level", "Family-level", "Order-or-higher")),
+    status_ni = factor(status_ni, levels = c("native", "introduced"))
+  )
+
+# Flow table: res_rank on left, status_ni on right
+flows_ni <- taxonomy_ni |>
+  filter(!is.na(res_rank), !is.na(status_ni)) |>
+  dplyr::count(res_rank, status_ni, name = "value")
+
+# Nodes
+nodes_ni <- tibble(
+  name = factor(c(
+    "Species-level",
+    "Genus-level",
+    "Family-level",
+    "Order-or-higher",
+    "Native",
+    "Introduced"
+  ), levels = c(
+    "Species-level",
+    "Genus-level",
+    "Family-level",
+    "Order-or-higher",
+    "Native",
+    "Introduced"
+  ))
+) |>
+  mutate(
+    group = case_when(
+      name == "Species-level"   ~ "rank_species",
+      name == "Genus-level"     ~ "rank_genus",
+      name == "Family-level"    ~ "rank_family",
+      name == "Order-or-higher" ~ "rank_higher",
+      name == "Native"          ~ "ni_native",
+      name == "Introduced"      ~ "ni_intro"
+    )
+  )
+
+# Links
+links_ni <- flows_ni |>
+  mutate(
+    source = match(res_rank, nodes_ni$name) - 1,
+    target = match(case_when(
+      status_ni == "native"     ~ "Native",
+      status_ni == "introduced" ~ "Introduced"
+    ), nodes_ni$name) - 1,
+    group = case_when(
+      status_ni == "native"     ~ "ni_native",
+      status_ni == "introduced" ~ "ni_intro"
+    )
+  ) |>
+  select(source, target, value, group)
+
+# Color scale update
+colourJS_ni <- networkD3::JS("
+  d3.scaleOrdinal()
+    .domain([
+      'rank_species',
+      'rank_genus',
+      'rank_family',
+      'rank_higher',
+      'ni_native',
+      'ni_intro'
+    ])
+    .range([
+      '#2ca02c',  // species
+      '#98df8a',  // genus
+      '#ff7f0e',  // family
+      'brown',    // order+
+      '#1f78b4',  // native
+      '#e31a1c'   // introduced
+    ])
+")
+
+# Create Sankey
+sankey_ni <- sankeyNetwork(
+  Links       = links_ni,
+  Nodes       = nodes_ni,
+  Source      = "source",
+  Target      = "target",
+  Value       = "value",
+  NodeID      = "name",
+  NodeGroup   = "group",
+  LinkGroup   = "group",
+  colourScale = colourJS_ni,
+  fontSize    = 24,
+  nodeWidth   = 34,
+  sinksRight  = TRUE,
+  iterations  = 0
+)
+
+sankey_ni
+
+# 1) Save the widget as an HTML file
+ni_html <- here("figures", "sankey_ni.html")
+htmlwidgets::saveWidget(
+  widget = sankey_ni,
+  file   = ni_html,
+  selfcontained = TRUE
+)
+
+# 2) Take a PNG snapshot of that HTML
+
+library(webshot2)
+png_file <- here("figures", "sankey_ni.png")
+
+webshot2::webshot(
+  url    = ni_html,
+  file   = png_file,
+  vwidth = 1200,   # tweak size as needed
+  vheight = 700,
+  zoom   = 2       # higher zoom = higher resolution
+)
+```
+
+## 📝 Sankey Panel (4er)
+
+```{r}
+library(cowplot)
+library(ggplot2)
+library(here)
+
+#a
+p_eco <- ggdraw() + draw_image(here("figures", "sankey_eco.png"))
+#b
+p_trust <- ggdraw() + draw_image(here("figures", "sankey_trust.png"))
+#c
+p_blast  <- ggdraw() + draw_image(here("figures", "sankey_blast.png"))
+#d
+p_ni  <- ggdraw() + draw_image(here("figures", "sankey_ni.png"))
+
+combined <-  ggdraw() +
+    draw_plot(
+      plot_grid(
+      p_eco,
+      p_trust,
+      p_blast,
+      p_ni,
+      ncol = 2,
+      rel_heights = c(1, 1, 1, 1),
+      labels = c("A)", "B)", "C)", "D)"),
+      label_size = 20,
+      label_x = 0.01,
+      label_y = 0.99,
+      hjust = 0, vjust = 1
+      )
+    ) +
+  theme(plot.background = element_rect(fill = "white", color = NA ))
+
+
+#
+ggsave(
+  filename = here("figures", "sankey_combined_vertical.png"),
+  plot     = combined,
+  width    = 14,
+  height   = 9,
+  dpi      = 600
+)
+```
