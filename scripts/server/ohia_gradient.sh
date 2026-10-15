@@ -30,18 +30,19 @@
 # ---------------------
 # PEAR, VSEARCH, USEARCH, BLAST+, GNU-compatible `sed -r`, standard Unix utilities,
 # and the custom programs `trimflow.py` and `blast2taxonomy_v1.4.2.py` are used.
-# trimflow.py, its matching trim_fasta.sh, configuration and trimming environment
-# are bundled in this directory. The taxonomy utility is an external dependency.
+# trimflow.py, its matching trim_fasta.sh, configuration, trimming environment
+# and blast2taxonomy_v1.4.2.py are bundled in this directory.
+# Taxonomy-tool dependencies and documentation: https://github.com/yschoeneberg/blast2taxonomy
 # The original USEARCH binary was named usearch11.0.667.
 #
 # The original log activated these existing mamba environments at the indicated
 # stages: pear, trimming_env, and blast2tax. These names do not specify the exact
 # package versions. Change environment names only to match your own installation.
 #
-# Before running commands, set the external taxonomy and database paths, e.g.:
-#   export BLAST2TAXONOMY_PY="/path/to/blast2taxonomy_v1.4.2.py"
+# Before running commands, set the external database path, e.g.:
 #   export NT_DATABASE="/path/to/the/nt/database/prefix"
-# TRIMFLOW_PY defaults to the bundled wrapper; set it to use another copy.
+# TRIMFLOW_PY and BLAST2TAXONOMY_PY default to the bundled scripts; set either
+# variable explicitly to use another copy.
 # Optionally set USEARCH_BIN if the USEARCH executable is not called `usearch`.
 # The database prefix must refer to the February 2025 nt snapshot used for the
 # study if the original reference searches are to be reproduced. The original
@@ -60,6 +61,7 @@
 # This leaves the working directory unchanged for the commands below.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TRIMFLOW_PY="${TRIMFLOW_PY:-$SCRIPT_DIR/trimflow.py}"
+BLAST2TAXONOMY_PY="${BLAST2TAXONOMY_PY:-$SCRIPT_DIR/blast2taxonomy_v1.4.2.py}"
 if [ ! -f "$TRIMFLOW_PY" ] || [ ! -x "$TRIMFLOW_PY" ]; then
     printf '%s\n' "Missing or non-executable trimming program: $TRIMFLOW_PY" >&2
     exit 1
@@ -142,9 +144,8 @@ blastn \
     -outfmt "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore staxids"
 
 # -----------------------------------------------------------------------------
-# 6. Attach taxonomy to BLAST hits using the original external utility
+# 6. Attach taxonomy to BLAST hits using the bundled version 1.4.2 utility
 # -----------------------------------------------------------------------------
-: "${BLAST2TAXONOMY_PY:?Set BLAST2TAXONOMY_PY to the original version 1.4.2 script.}"
 if [ ! -f "$BLAST2TAXONOMY_PY" ] || [ ! -x "$BLAST2TAXONOMY_PY" ]; then
     printf '%s\n' "Missing or non-executable taxonomy program: $BLAST2TAXONOMY_PY" >&2
     exit 1
