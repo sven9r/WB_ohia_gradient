@@ -29,20 +29,19 @@
 # External requirements
 # ---------------------
 # PEAR, VSEARCH, USEARCH, BLAST+, GNU-compatible `sed -r`, standard Unix utilities,
-# and the original custom programs `trimflow.py` and
-# `blast2taxonomy_v1.4.2.py` must already be available. The original USEARCH binary
-# was named usearch11.0.667. Environment specifications and the custom programs
-# are not included in this repository. `trimflow.py` has not been recovered from
-# the available local source files; do not substitute another trimming script.
+# and the custom programs `trimflow.py` and `blast2taxonomy_v1.4.2.py` are used.
+# trimflow.py, its matching trim_fasta.sh, configuration and trimming environment
+# are bundled in this directory. The taxonomy utility is an external dependency.
+# The original USEARCH binary was named usearch11.0.667.
 #
 # The original log activated these existing mamba environments at the indicated
 # stages: pear, trimming_env, and blast2tax. These names do not specify the exact
 # package versions. Change environment names only to match your own installation.
 #
-# Before running commands, set the three external paths in your shell, e.g.:
-#   export TRIMFLOW_PY="/path/to/original/trimflow.py"
+# Before running commands, set the external taxonomy and database paths, e.g.:
 #   export BLAST2TAXONOMY_PY="/path/to/blast2taxonomy_v1.4.2.py"
 #   export NT_DATABASE="/path/to/the/nt/database/prefix"
+# TRIMFLOW_PY defaults to the bundled wrapper; set it to use another copy.
 # Optionally set USEARCH_BIN if the USEARCH executable is not called `usearch`.
 # The database prefix must refer to the February 2025 nt snapshot used for the
 # study if the original reference searches are to be reproduced. The original
@@ -54,15 +53,15 @@
 # FASTQ.gz files. The filename-generation command expects the original Illumina
 # naming pattern, including _R1_/_R2_ and _S<number>_L001_R2_001.fastq, and filenames
 # without whitespace. Inspect the generated pear.sh and fastq.sh before running
-# them. Section 3 uses the original interactive trimming program. Sections 4–6
+# them. Section 3 uses the bundled interactive trimming program. Sections 4–6
 # run from the sequence directory containing its `2_merged_ANML.fas` output.
 #
-# Check that the original external trimming implementation is available before
-# beginning any processing. An unavailable file is a missing dependency, not a
-# reason to replace the study's algorithm with a different implementation.
-: "${TRIMFLOW_PY:?Set TRIMFLOW_PY to the original trimflow.py file before processing.}"
+# Locate the bundled wrapper independently of the directory containing reads.
+# This leaves the working directory unchanged for the commands below.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+TRIMFLOW_PY="${TRIMFLOW_PY:-$SCRIPT_DIR/trimflow.py}"
 if [ ! -f "$TRIMFLOW_PY" ] || [ ! -x "$TRIMFLOW_PY" ]; then
-    printf '%s\n' "Missing or non-executable original trimming program: $TRIMFLOW_PY" >&2
+    printf '%s\n' "Missing or non-executable trimming program: $TRIMFLOW_PY" >&2
     exit 1
 fi
 
@@ -97,11 +96,12 @@ chmod u+x fastq.sh
 # -----------------------------------------------------------------------------
 mamba activate trimming_env
 
-# Launch the same external program named in the original log. At its prompts,
-# choose the ANML primer pair and inline barcodes A, B, C. These are interactive
-# selections, not command-line arguments. The original log does not specify
-# further trimming options, primer definitions within trimflow.py, or length
-# limits; those cannot be reconstructed here without the original program.
+# Launch the bundled wrapper from the directory containing merged FASTA files.
+# At its prompts, choose ANML, inline barcodes A,B,C, and pipeline mode UNIX.
+# Accept the current directory for output so the following commands can find it.
+# These are interactive selections, not command-line arguments. Primer sequences
+# and expected insert lengths come from the configured primer table; the code
+# comments explain the matching rules and the 95–105% insert-length window.
 # The ANML output used below is named `2_merged_ANML.fas`.
 "$TRIMFLOW_PY"
 

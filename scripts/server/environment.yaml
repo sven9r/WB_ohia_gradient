@@ -1,0 +1,11 @@
+# Runtime requirements for trimflow and its bundled trimming engine.
+# PEAR, VSEARCH, USEARCH and BLAST belong to separate stages in ohia_gradient.sh.
+name: trimming_env
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.9
+  - pandas
+  - pyyaml
+  # The trimming engine uses associative arrays, which require Bash 4 or newer.
+  - bash>=4

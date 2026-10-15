@@ -16,7 +16,8 @@ The R workflow starts from processed ASV tables and saved NIClassify predictions
 | [05_titan_breakpoints.qmd](scripts/05_titan_breakpoints.qmd) | TITAN2 elevation analysis and presence/absence sensitivity comparison (Figure 6; S10). |
 | [06_molecular_framing.qmd](scripts/06_molecular_framing.qmd) | Reference-based and NIClassify status summaries (Figure 2; Table 1; S1). |
 | [07_status_communities.qmd](scripts/07_status_communities.qmd) | Native/introduced community structure and within-ridge distance–decay (Figure 3; S5). |
-| [ohia_gradient.sh](scripts/ohia_gradient.sh) | Commented record of the upstream ANML sequence-processing commands. |
+| [server/ohia_gradient.sh](scripts/server/ohia_gradient.sh) | Commented record of the upstream ANML sequence-processing commands. |
+| [server/trimflow.py](scripts/server/trimflow.py) | Interactive primer/barcode trimming, with its matching Bash engine and configuration. |
 
 ## Inputs
 
@@ -42,4 +43,13 @@ quarto render scripts/03_overlap_invasion.qmd
 
 Figures are written to `figures/main/` and `figures/supp/`; derived tables and temporary graphics go to `output/`. Filenames include the execution date. Permutation, bootstrap and ordination results can vary where the original code does not fix the random seed.
 
-The upstream shell record requires the original reads, external tools, database and interactive `trimflow.py` implementation. It documents the recovered ANML commands and is separate from the processed-data R workflow; see its comments for requirements.
+## Server sequence processing
+
+[scripts/server/](scripts/server/) contains the ANML command record, `trimflow.py`, `trim_fasta.sh`, configuration and environment file. Create the trimming environment from the repository root:
+
+```sh
+mamba env create -f scripts/server/environment.yaml
+mamba activate trimming_env
+```
+
+Run `python /path/to/WB_ohia_gradient/scripts/server/trimflow.py` from the directory containing merged `.fasta` reads. Select **ANML**, **A,B,C**, **UNIX** and the output directory at the prompts. The wrapper downloads the configured primer table and calls the bundled Bash engine; detailed comments explain matching, length filtering and output files. The complete sequence-processing record also requires the original reads, other processing tools and reference database listed in `ohia_gradient.sh`.
