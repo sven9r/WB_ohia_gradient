@@ -1,0 +1,27 @@
+# trimflow reads this file beside trimflow.py unless TRIMFLOW_CONFIG points
+# to another YAML file. Run trimflow from the directory containing your reads.
+
+# The wrapper downloads this public primer table at the start of every run.
+# Its required columns are amplicon_name, type (forward/reverse), sequence,
+# and amplicon_length_wo_primer (the expected insert length without primers).
+google_sheet_id: "1jIGCutiNClf-SXPmGK0i4-3TvWs7u_jqmjtBnsqxyLs"
+
+# Download destination, relative to the directory from which trimflow is run.
+# The CSV is refreshed before the wrapper loads the primer definitions.
+primer_database_path: "primer_database.csv"
+
+# An empty value selects the bundled trim_fasta.sh beside trimflow.py.
+# Set an absolute path here to deliberately use another compatible engine.
+trim_fasta_path: ""
+
+# Barcode labels are entered at the interactive prompt, e.g. A,B,C.
+# Each label expands to the exact sequence that must precede the forward primer.
+# Enter X at the prompt for reads with no inline barcode; X is handled by the
+# wrapper and therefore does not require an entry in this mapping.
+inline_barcodes:
+  A: ATCACG
+  B: CGATGT
+  C: TTAGGC
+  D: TGACCA
+  E: GCCAAT
+  F: CAGATC

@@ -12,3 +12,9 @@ scripts/*.html
 scripts/*.rmarkdown
 scripts/*_files/
 scripts/*_cache/
+__pycache__/
+/primer_database.csv
+/run_trimfasta.sh
+/trimflow_log.txt
+/name_transformation.log
+/nonl_fasta/
