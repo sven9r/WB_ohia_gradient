@@ -1,0 +1,1117 @@
+---
+title: "Community composition and spatial turnover"
+format: html
+---
+
+```{r initial_analyses_setup, include=FALSE}
+source(here::here("scripts/00_source.R"))
+```
+
+```{r nmds_leke, message=FALSE, warning=FALSE, results='hide', echo = FALSE}
+
+nmdsLEKE <- metaMDS(zotu_df |>
+                      filter(!str_detect(sample_id, "control")) |>
+                      filter(!str_detect(sample_id, "CH|H")) |>
+                      filter(!str_detect(sample_id, "KT1")) |>
+                      filter(!str_detect(sample_id, "KA5")) |>
+                      filter(str_detect(sample_id, "O_|K_|G_")) |>
+                      column_to_rownames("sample_id"),
+                        distance = "bray", k = 2, trymax = 9999)
+
+
+NMDSscoreLEKE <- scores(nmdsLEKE , display = "sites") %>%
+  as.data.frame() %>%
+  rownames_to_column("sample_id") %>%
+  left_join(meta_data, by = "sample_id")
+# Save NMDS scores table (optional)
+# write.csv(NMDSscoreLEKE, "output/NMDS_scores_leke.csv", row.names = FALSE)
+
+NMDSstressLEKE <- round(nmdsLEKE$stress,2) * 100
+
+
+
+NMDSscoreLEKE_new <- NMDSscoreLEKE |>
+  mutate(
+    label = paste0(commonname, "\n", sample_site),
+    commonname_color = case_when(
+      commonname == "ʻōhiʻa Lehua" ~ "ʻōhiʻa Lehua",
+      commonname == "koa" ~ "koa",
+      commonname == "strawberry guava" ~ "strawberry guava",
+      TRUE ~ "other"
+    ),
+    elev_arrow = case_when(
+      elevation == "high" ~ "\u25B2",
+      elevation == "mid"  ~ "\u25A0",
+      elevation == "low"  ~ "\u25BC"
+    )
+  )
+
+# Set your color palette
+plant_colors <- c("ʻōhiʻa Lehua" = "#C1133D",
+      "koa" = "#8B4513",
+      "strawberry guava" = "gold")
+
+hull_data_tree_leke <-
+  NMDSscoreLEKE_new %>%
+   mutate(label = paste0(commonname, "\n", sample_site)) |>
+  group_by(label) %>%
+  dplyr::slice(chull(NMDS1, NMDS2))
+
+elevation_key_leke <- tibble::tibble(
+  elevation = factor(c("high", "mid", "low"), levels = c("high", "mid", "low")),
+  NMDS1 = 1e6,
+  NMDS2 = 1e6
+)
+
+#we want to visualize the two different ridges and want to see their dissimiliarty
+
+nmds_tree_plot_leke <- NMDSscoreLEKE_new |>
+  ggplot() +
+
+  geom_point(
+    aes(NMDS1, NMDS2, fill = commonname_color, shape = elevation),
+    color = "black",
+    size = 4,
+    stroke = 1.1,
+    show.legend = FALSE
+  ) +
+
+  geom_polygon(
+    data = hull_data_tree_leke,
+    aes(NMDS1, NMDS2, fill = commonname_color, color = commonname_color, group = label),
+    alpha = 0.2
+  ) +
+
+  geom_point(
+    data = NMDSscoreLEKE_new |>
+      distinct(label, elevation, shortname, commonname_color),
+    aes(x = 999, y = 999, fill = commonname_color, shape = elevation),
+    color = "black",
+    size = 4,
+    show.legend = TRUE,
+    inherit.aes = FALSE
+  ) +
+
+  scale_color_manual(values = plant_colors) +
+  scale_fill_manual(
+    values = plant_colors,
+    guide = guide_legend(
+      override.aes = list(shape = NA, colour = NA, alpha = 0.2)
+    )
+  ) +
+  scale_shape_manual(
+    name = "Elevation within ridge\n(240-500m)",
+    breaks = c("high", "mid", "low"),
+    labels = c("High", "Mid", "Low"),
+    values = c("high" = 24, "mid" = 22, "low" = 25)
+  ) +
+  coord_cartesian(xlim = c(-.2,.2), ylim = c(-.2,.2)) +
+  labs(x = glue("MDS1 \nStress = {NMDSstressLEKE} %"),
+       y = "MDS2",
+       fill = "Tree species",
+       color = "Tree species") +
+  theme_classic() +
+  theme(
+    legend.title = element_text(size = 13),
+    legend.text = element_text(size = 13),
+    axis.text = element_markdown(size = 13, color = "black"),
+    axis.title = element_text(color = "black")
+  )
+
+
+nmdsohia <- metaMDS(zotu_df |>
+                      filter(!str_detect(sample_id, "control")) |>
+                      filter(!str_detect(sample_id, "CH|H")) |>
+                      filter(!str_detect(sample_id, "KT1")) |>
+                      filter(!str_detect(sample_id, "KA5")) |>
+                      filter(!str_detect(sample_id, "K_|G_")) |>
+                      column_to_rownames("sample_id"),
+                        distance = "bray", k = 2, trymax = 9999)
+
+NMDSscoresohia <- scores(nmdsohia , display = "sites") %>%
+  as.data.frame() %>%
+  rownames_to_column("sample_id") %>%
+  left_join(meta_oahu, by = "sample_id") |>
+  mutate(elev_arrow = case_when(
+    elev_band == "High" ~ "\u25B2",  # ▲
+    elev_band == "Mid"  ~ "\u25A0",  # ■
+    elev_band == "Low"  ~ "\u25BC"   # ▼
+    )
+  )
+# Save NMDS scores table (optional)
+# write.csv(NMDSscoreLEKE, "output/NMDS_scores_leke.csv", row.names = FALSE)
+
+NMDSstressohia <- round(nmdsohia$stress,2) * 100
+
+
+hull_data_site <-
+  NMDSscoresohia %>%
+  drop_na(sample_site) %>%
+  group_by(sample_site) %>%
+  dplyr::slice(chull(NMDS1, NMDS2))
+
+hulls <- NMDSscoresohia |>
+  filter(!is.na(elev_band)) |>
+  group_by(elev_band) |>
+  filter(n() >= 3) |>
+  slice(chull(NMDS1, NMDS2)) |>
+  ungroup()
+
+band_key <- NMDSscoresohia |>
+  distinct(elev_band) |>
+  mutate(NMDS1 = 0, NMDS2 = 0)
+
+nmds_elevation_m_plot <- ggplot(NMDSscoresohia, aes(NMDS1, NMDS2)) +
+  geom_polygon(
+    data = hulls,
+    aes(fill = elev_band, group = elev_band),
+    alpha = 0.18, color = "grey30", linewidth = 0.6,
+    show.legend = FALSE
+  ) +
+  geom_point(
+    data = band_key,
+    aes(NMDS1, NMDS2, fill = elev_band, shape = elev_band),
+    color = "black", size = 4, stroke = 1.1,
+    inherit.aes = FALSE, alpha = 0, show.legend = FALSE
+  ) +
+  scale_shape_manual(
+    name = "Elevation band",
+    breaks = c("High", "Mid", "Low"),
+    values = c(High = 24, Mid = 22, Low = 25),
+    guide = guide_legend(
+      order = 1,
+      override.aes = list(fill = "white", color = "black", size = 4, stroke = 1.1)
+    )
+  ) +
+  scale_fill_manual(
+    values = c(Low="#381991", Mid="#ca477a", High="#f3ee26"),
+    breaks = c("High","Mid","Low"),
+    name   = "Elevation band",
+    guide  = guide_legend(
+      keyheight = unit(10, "pt"), keywidth = unit(18, "pt"),
+      override.aes = list(alpha = 0, shape = NA, colour = "black", size = 4),
+      key_glyph = "point"
+    )
+  ) +
+  new_scale_fill() +
+  geom_point(aes(fill = elevation_m, shape = elev_band),
+             color = "black", size = 4, stroke = 1.1) +
+  scale_fill_viridis_c(
+    option = "plasma",
+    limits = range(NMDSscoresohia$elevation_m, na.rm = TRUE),
+    name   = "Elevation (m)",
+    guide  = guide_colorbar(
+      title.position="top",
+      direction="vertical",
+      barwidth=unit(10,"pt"),
+      barheight=unit(140,"pt"),
+      ticks=TRUE)
+  ) +
+  coord_cartesian(xlim = c(-.5, .5), ylim = c(-.51, .51)) +
+  labs(x = glue("MDS1 \nStress = {NMDSstressohia} %"), y = "MDS2") +
+  theme_classic() +
+  theme(
+    legend.position = "right",
+    legend.box = "vertical",
+    legend.title = element_text(size = 14),
+    legend.text  = element_text(size = 12),
+    axis.text    = element_markdown(size = 13, color = "black"),
+    axis.title   = element_text(color = "black")
+  )
+
+band_key <- tibble::tibble(
+  elev_band = factor(c("High","Mid","Low"), levels = c("High","Mid","Low")),
+  NMDS1 = 1e6, NMDS2 = 1e6
+)
+
+nmds_site_plot <- ggplot(NMDSscoresohia) +
+  geom_point(
+    aes(NMDS1, NMDS2, fill = sample_site, shape = elev_band),
+    colour = "black", size = 4.2, stroke = 1.1, show.legend = FALSE
+  ) +
+  geom_polygon(
+    data = hull_data_site,
+    aes(NMDS1, NMDS2, fill = sample_site, group = sample_site),
+    color = 'grey30', linewidth = 0.6, alpha = 0.20,
+    show.legend = TRUE, key_glyph = ggplot2::draw_key_rect
+  ) +
+  geom_point(
+    data = band_key,
+    aes(NMDS1, NMDS2, shape = elev_band),
+    colour = "black", size = 4.2, stroke = 1.1,
+    inherit.aes = FALSE, show.legend = TRUE
+  ) +
+  scale_shape_manual(
+    name   = "Elevation band\nbased on Jenks",
+    breaks = c("High","Mid","Low"),
+    values = c(High = 24, Mid = 22, Low = 25),
+    guide  = guide_legend(order = 1,
+                          override.aes = list(fill = NA, colour = "black", size = 4.2, stroke = 1.1))
+  ) +
+  scale_fill_npg(
+    name = "Ridges on Oʻahu",
+    guide = guide_legend(
+      order = 2,
+      key_glyph   = ggplot2::draw_key_rect,
+      override.aes = list(shape = NA, colour = NA, alpha = 0.40)
+    )
+  ) +
+  scale_colour_npg(guide = "none") +
+  coord_cartesian(xlim = c(-.5, .5), ylim = c(-.51, .51)) +
+  labs(x = glue::glue("MDS1 \nStress = {NMDSstressohia} %"),
+       y = "MDS2") +
+  theme_classic() +
+  theme(
+    legend.position = "right",
+    legend.box = "vertical",
+    legend.key = element_rect(fill = "transparent", colour = "white"),
+    legend.key.height = unit(0.6, "cm"),
+    legend.key.width  = unit(0.6, "cm"),
+    legend.key.spacing.y = unit(0.05, "cm"),
+    legend.title = element_text(size = 13),
+    legend.text  = element_text(size = 13),
+    axis.text    = ggtext::element_markdown(size = 13, colour = "black"),
+    axis.title   = element_text(colour = "black")
+  )
+
+NMDSscoresohia <- NMDSscoresohia %>%
+  mutate(
+    rain_band = cut(rainfall,
+                    breaks = rain_brks,
+                    include.lowest = TRUE,
+                    labels = c("Low","Mid","High")),
+    elev_band = factor(elev_band, levels = c("High","Mid","Low"))
+  )
+
+hulls_rain <- NMDSscoresohia %>%
+  filter(!is.na(rain_band)) %>%
+  group_by(rain_band) %>%
+  filter(n() >= 3) %>%
+  slice(chull(NMDS1, NMDS2)) %>%
+  ungroup()
+
+hull_cols <- c(Low  = brewer.pal(3, "YlGnBu")[1],
+               Mid  = brewer.pal(3, "YlGnBu")[2],
+               High = brewer.pal(3, "YlGnBu")[3])
+
+nmds_rainfall_plot <- ggplot(NMDSscoresohia, aes(NMDS1, NMDS2)) +
+  geom_polygon(
+    data = hulls_rain,
+    aes(fill = rain_band, group = rain_band),
+    alpha = 0.25, color = "grey30", linewidth = 0.6, show.legend = FALSE
+  ) +
+  scale_fill_manual(values = hull_cols, guide = "none") +
+  new_scale_fill() +
+  geom_point(aes(fill = rainfall, shape = elev_band),
+             color = "black", size = 4, stroke = 1.1) +
+  scale_shape_manual(
+    name   = "Elevation band\nbased on jenks",
+    values = c(Low = 25, Mid = 22, High = 24)
+  ) +
+  scale_fill_distiller(
+    palette = "YlGnBu", direction = 1,
+    limits  = range(NMDSscoresohia$rainfall, na.rm = TRUE),
+    name    = "Rainfall (mm/yr)",
+    guide   = guide_colorbar(
+      title.position = "top",
+      direction      = "vertical",
+      barwidth       = unit(10, "pt"),
+      barheight      = unit(140, "pt"),
+      ticks          = TRUE
+    )
+  ) +
+  coord_cartesian(xlim = c(-.5, .5), ylim = c(-.51, .51)) +
+  labs(x = glue("MDS1 \nStress = {NMDSstressohia} %"), y = "MDS2") +
+  theme_classic() +
+  theme(
+    legend.position = "right",
+    legend.box = "vertical",
+    legend.title = element_text(size = 14),
+    legend.text  = element_text(size = 12),
+    axis.text    = element_markdown(size = 13, color = "black"),
+    axis.title   = element_text(color = "black")
+  )
+
+
+
+
+
+```
+
+```{r nmds-plots, warning=FALSE}
+
+stress1 <- stressplot(nmdsLEKE)
+nmds_tree_plot_leke
+stress1 <- stressplot(nmdsohia)
+nmds_rainfall_plot
+nmds_elevation_m_plot
+nmds_site_plot
+
+
+NMDS_panel <-
+(nmds_tree_plot_leke + nmds_rainfall_plot) /
+(nmds_elevation_m_plot + nmds_site_plot) +
+  plot_layout(widths = c(1, 1), heights = c(1, 1)) +
+  plot_annotation(tag_levels = "A", tag_suffix = ")")
+
+```
+
+```{r nmds-panel, echo=FALSE, fig.width=8, fig.height=12, out.width="100%", fig.align="center", warning = FALSE}
+#save this to png and svg file with dynamic date with paste0
+
+save_fig(
+  tag = "S3_nmds_panel",
+  plot = NMDS_panel,
+  which = "supp",
+  prefix = "none",
+  width = 14,
+  height = 12,
+  dpi = 300
+)
+NMDS_panel
+```
+
+```{r statistical-setup-leke, warning = FALSE, echo = FALSE}
+# Prepare matrix and metadata for PERMANOVA
+zotu_leke <- zotu_df |>
+  filter(!str_detect(sample_id, "control")) |>
+  filter(!str_detect(sample_id, "CH|H")) |>
+  filter(!str_detect(sample_id, "KT1|KA5")) |>
+  filter(str_detect(sample_id, "O_|K_|G_")) |>
+  column_to_rownames("sample_id")
+
+```
+
+```{r statistical-tests-leke, echo = FALSE, warning = FALSE}
+# Calculate Bray-Curtis dissimilarity between samples
+bray_leke <- vegdist(zotu_leke, method = "bray")
+# Prepare Prepare matching metadata for only the samples used
+meta_leke <- meta_data |> filter(sample_id %in% rownames(zotu_leke))
+
+# Run PERMANOVA to test if tree type significantly affects community composition
+adonis_leke <- adonis2(bray_leke ~ commonname, data = meta_leke)
+print(adonis_leke)
+# Save PERMANOVA results (optional)
+# capture.output(adonis_leke, file = "output/permanova_leke.txt")
+
+```
+
+```{r beta-disp-leke ,echo = FALSE}
+disp_leke <- betadisper(bray_leke, meta_leke$commonname)
+permutest(disp_leke)
+# Save beta-dispersion test output (optional)
+# capture.output(permutest(disp_leke), file = "output/betadispersion_leke.txt")
+```
+
+```{r statistical-setup2, warning = FALSE, echo = FALSE}
+# Ensure sample_id is character
+meta_data$sample_id <- as.character(meta_data$sample_id)
+zotu_df$sample_id <- as.character(zotu_df$sample_id)
+
+# Merge metadata with zotu table, remove controls
+merged_df <- meta_data %>%
+  inner_join(zotu_df, by = "sample_id") |>
+  filter(!str_detect(sample_id, "control"))
+
+# Extract OTU matrix for analysis
+zotu_matrix <- merged_df %>%
+  select(starts_with("zotu")) %>%
+  as.matrix()
+rownames(zotu_matrix) <- merged_df$sample_id
+
+# Calculate Bray-Curtis dissimilarity
+bray_dist <- vegdist(zotu_matrix, method = "bray")
+```
+
+```{r ohia-site-statistics, echo = FALSE}
+# --------------------------------------------
+# 1. OHIA ONLY - Differences between sites
+ohia_df <- merged_df %>% filter(commonname == "ʻōhiʻa Lehua")
+zotu_ohia <- ohia_df %>% select(starts_with("zotu")) %>% as.matrix()
+rownames(zotu_ohia) <- ohia_df$sample_id
+bray_ohia <- vegdist(zotu_ohia, method = "bray")
+
+# PERMANOVA for sample_site within Ohia
+adonis_ohia_site <- adonis2(bray_ohia ~ sample_site, data = ohia_df)
+print(adonis_ohia_site)
+```
+
+```{r ohia-betadisp-plot-setup, echo = FALSE}
+
+ohia_dispersion <- betadisper(bray_ohia, ohia_df$sample_site)
+ohia_df_disp <- data.frame(distance = ohia_dispersion$distances,
+                            tree_species = ohia_df$commonname,
+                           sample_site = ohia_df$sample_site,
+                           island = ohia_df$island)
+ohia_df_disp |>
+  filter(island != "Hawaii") |>
+  ggplot(aes(x = sample_site, y = distance, fill = sample_site)) +
+  geom_boxplot() +
+  scale_fill_npg() +
+  theme_minimal() +
+  labs(
+    title = "Beta Dispersion across ʻōhiʻa sites on Oʻahu",
+    x = "Sample Site",
+    y = "Distance to Centroid",
+    fill = "Ridges"
+  )
+
+betadisp_site_plot <- ohia_df_disp |>
+  filter(island != "Hawaii") |>
+  ggplot(aes(x = sample_site, y = distance, fill = sample_site)) +
+  geom_boxplot() +
+  scale_fill_npg() +
+  theme_minimal() +
+  labs(
+    x = "Sample Site",
+    y = "Distance to Centroid",
+    fill = "Ridges"
+  )
+
+
+permutest(ohia_dispersion)
+
+```
+
+```{r ohia-elevations-statistics, echo = FALSE}
+# --------------------------------------------
+# 2. OHIA ONLY - Differences by elevation
+
+elev_dispersion <- betadisper(bray_ohia, ohia_df$commonname)
+elev_df_disp <- data.frame(distance = ohia_dispersion$distances,
+                            tree_species = ohia_df$commonname,
+                           sample_site = ohia_df$sample_site,
+                           island = ohia_df$island,
+                           elevation = ohia_df$elevation)
+
+# Create plotting df
+elev_df_disp <- data.frame(
+  distance = elev_dispersion$distances,
+  elevation = ohia_df$elevation,
+  sample_site = ohia_df$sample_site,
+  island = ohia_df$island
+)
+
+# Boxplot showing within-group beta dispersion by elevation
+elev_df_disp |>
+  filter(island != "Hawaii") |>
+  mutate(elevation = factor(stringr::str_to_title(elevation), levels = c("Low", "Mid", "High"))) |>
+  ggplot(aes(x = elevation, y = distance, fill = elevation)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c(
+    Low = viridisLite::viridis(3, option = "plasma")[1],
+    Mid = viridisLite::viridis(3, option = "plasma")[2],
+    High = viridisLite::viridis(3, option = "plasma")[3]
+  )) +
+  theme_minimal() +
+  labs(
+    title = "Beta Dispersion across elevation groups (ʻŌhiʻa only)",
+    x = "Elevation", y = "Distance to Centroid"
+  )
+
+betadisp_elev_plot <- elev_df_disp |>
+  filter(island != "Hawaii") |>
+  mutate(elevation = factor(stringr::str_to_title(elevation), levels = c("Low", "Mid", "High"))) |>
+  ggplot(aes(x = elevation, y = distance, fill = elevation)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c(
+    Low = viridisLite::viridis(3, option = "plasma")[1],
+    Mid = viridisLite::viridis(3, option = "plasma")[2],
+    High = viridisLite::viridis(3, option = "plasma")[3]
+  )) +
+  theme_minimal() +
+  labs(
+    x = "Elevation",
+    y = "Distance to Centroid"
+  )
+```
+
+```{r elevations-statistics, echo = FALSE}
+adonis_ohia_elev <- adonis2(bray_ohia ~ elevation, data = ohia_df)
+print(adonis_ohia_elev)
+
+elev_dispersion <- betadisper(bray_ohia, ohia_df$elevation)  # ✅ fix
+permutest(elev_dispersion)  # (optional but important)
+```
+
+```{r betadisp-supp-panel, echo = FALSE, warning = FALSE}
+# final S4 is assembled later as A/B/C once the beta-within/between panel is built
+betadisp_site_plot
+betadisp_elev_plot
+```
+
+```{r permanova-combined, warning = FALSE, echo = FALSE}
+# Subset only ʻōhiʻa samples from Oʻahu
+ohia_oahu_df <- merged_df %>%
+  filter(commonname == "ʻōhiʻa Lehua", island == "Oahu")
+
+# Prepare OTU matrix and Bray-Curtis distance
+zotu_ohia_oahu <- ohia_oahu_df %>%
+  select(starts_with("zotu")) %>%
+  as.matrix()
+rownames(zotu_ohia_oahu) <- ohia_oahu_df$sample_id
+
+bray_ohia_oahu <- vegdist(zotu_ohia_oahu, method = "bray")
+
+# Run combined PERMANOVA
+adonis_ohia_combined <- adonis2(
+  bray_ohia_oahu ~ sample_site + elevation,
+  data = ohia_oahu_df
+)
+
+print(adonis_ohia_combined)
+```
+
+```{r beta-within-between, echo = FALSE, fig.width=8, fig.height=12, out.width="100%", fig.align="center", warning = FALSE}
+#create a df from ohia distance matrix
+
+meta_data_short1 <- meta_data %>%
+  select(sample_id, sample_site, elevation, island, commonname) |>
+  rename_with(~ paste0(., "_1"), -sample_id)
+
+meta_data_short2 <- meta_data %>%
+  select(sample_id, sample_site, elevation, island,commonname) |>
+  rename_with(~ paste0(., "_2"), -sample_id)
+
+bray_ohia_df <- as.matrix(bray_ohia) |>
+  as.data.frame() |>
+  rownames_to_column(var = "sample_id") |>
+  pivot_longer(-sample_id, names_to = "sample_id2", values_to = "distance") |>
+  left_join(meta_data_short1, by = c("sample_id" = "sample_id"), suffix = c("", "_s1")) |>
+  filter(sample_id != sample_id2) |>
+  left_join(meta_data_short2, by = c("sample_id2" = "sample_id"), c("", "_s2"))
+
+bray_leke <- as.matrix(bray_dist) |>
+  as.data.frame() |>
+  rownames_to_column(var = "sample_id") |>
+  pivot_longer(-sample_id, names_to = "sample_id2", values_to = "distance") |>
+  left_join(meta_data_short1, by = c("sample_id" = "sample_id"), suffix = c("", "_s1")) |>
+  filter(sample_id != sample_id2) |>
+  left_join(meta_data_short2, by = c("sample_id2" = "sample_id"), c("", "_s2"))
+
+within_sites <- bray_ohia_df |>
+  filter(sample_site_1 == sample_site_2) |>
+  filter(island_1 == "Oahu") |>
+  filter(island_2 == "Oahu") |>
+  mutate(comparison = "within sites",
+         order = "1_all_sites")
+
+between_sites <- bray_ohia_df |>
+  filter(sample_site_1 != sample_site_2) |>
+  filter(sample_site_1 < sample_site_2) |>
+   filter(island_1 == "Oahu") |>
+  filter(island_2 == "Oahu") |>
+  mutate(comparison = "between sites",
+         order = "1_all_sites")
+
+within_elevation <- bray_ohia_df |>
+  filter(elevation_1 == elevation_2) |>
+  filter(island_1 == "Oahu", island_2 == "Oahu") |>
+  mutate(comparison = "within elevation",
+         order = "2_elevation_category")
+
+between_elevation <- bray_ohia_df |>
+  filter(elevation_1 != elevation_2) |>
+  filter(sample_site_1 < sample_site_2) |>
+  filter(island_1 == "Oahu") |>
+  filter(island_2 == "Oahu") |>
+  mutate(comparison = "between elevation",
+         order = "2_elevation_category")
+
+within_elevation_leke <- bray_leke |>
+  filter(elevation_1 == elevation_2) |>
+  filter(str_detect(sample_site_1, "Mānana|Aiea|ʻAiea")) |>
+  filter(str_detect(sample_site_2, "Mānana|Aiea|ʻAiea")) |>
+  mutate(comparison = "within elevation Leke",
+         order = "3_elevation_leke")
+
+between_elevation_leke <- bray_leke |>
+  filter(elevation_1 != elevation_2) |>
+  filter(str_detect(sample_site_1, "Mānana|Aiea|ʻAiea")) |>
+  filter(str_detect(sample_site_2, "Mānana|Aiea|ʻAiea")) |>
+  filter(sample_site_1 < sample_site_2) |>
+  mutate(comparison = "between elevation Leke",
+         order = "3_elevation_leke")
+
+within_trees_leke <- bray_leke |>
+  filter(commonname_1 == commonname_2) |>
+  filter(str_detect(sample_site_1, "Mānana|Aiea|ʻAiea")) |>
+  filter(str_detect(sample_site_2, "Mānana|Aiea|ʻAiea")) |>
+  mutate(comparison = "within tree species Leke",
+         order = "4_different_trees")
+
+between_trees_leke <- bray_leke |>
+  filter(commonname_1 != commonname_2) |>
+  filter(str_detect(sample_site_1, "Mānana|Aiea|ʻAiea")) |>
+  filter(str_detect(sample_site_2, "Mānana|Aiea|ʻAiea")) |>
+  filter(sample_site_1 < sample_site_2) |>
+  mutate(comparison = "between tree species Leke",
+         order = "4_different_trees")
+
+
+beta_comp <- bind_rows(
+  within_sites, between_sites,
+  within_elevation, between_elevation,
+  between_elevation_leke,within_elevation_leke,
+  within_trees_leke, between_trees_leke)
+
+beta_comb_plot <- beta_comp |>
+  mutate(comparison = as.factor(comparison))|>
+  ggplot(aes(x = fct_reorder(comparison, order),
+             y = distance)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Beta Diversity across all ‘Ōhi‘a samples from O‘ahu\nGrouped by comparison type",
+       x = "Comparison",
+       y = "beta diversity distance") +
+  facet_wrap(~order, scales = "free_x", ncol =1) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+beta_comb_plot
+
+# --- Final S4: single-panel turnover across ridges, elevation, and plants ---
+s4_plot_df <- bind_rows(
+  within_sites            |> mutate(comparison = "within Ridges"),
+  between_sites           |> mutate(comparison = "between Ridges"),
+  within_elevation        |> mutate(comparison = "within elevation\nbands"),
+  between_elevation       |> mutate(comparison = "between elevation\nbands"),
+  within_trees_leke       |> mutate(comparison = "within tree comparison"),
+  between_trees_leke      |> mutate(comparison = "between tree comparison"),
+  within_elevation_leke   |> mutate(comparison = "within elevation\ntree comparison")
+) |>
+  mutate(
+    comparison = factor(
+      comparison,
+      levels = c(
+        "within Ridges",
+        "between Ridges",
+        "within elevation\nbands",
+        "between elevation\nbands",
+        "within tree comparison",
+        "between tree comparison",
+        "within elevation\ntree comparison"
+      )
+    )
+  )
+
+kw_s4 <- kruskal.test(distance ~ comparison, data = s4_plot_df)
+pw_s4 <- pairwise.wilcox.test(
+  s4_plot_df$distance,
+  s4_plot_df$comparison,
+  p.adjust.method = "fdr",
+  exact = FALSE
+)
+
+mat_s4 <- pw_s4$p.value
+lvls_s4 <- base::union(rownames(mat_s4), colnames(mat_s4))
+full_s4 <- matrix(NA_real_, length(lvls_s4), length(lvls_s4), dimnames = list(lvls_s4, lvls_s4))
+full_s4[rownames(mat_s4), colnames(mat_s4)] <- mat_s4
+full_s4[colnames(mat_s4), rownames(mat_s4)] <- t(mat_s4)
+
+pairs_s4 <- combn(lvls_s4, 2, simplify = FALSE)
+pvec_s4 <- sapply(pairs_s4, function(x) full_s4[x[1], x[2]])
+names(pvec_s4) <- sapply(pairs_s4, paste, collapse = "-")
+letters_s4 <- multcompView::multcompLetters(pvec_s4, threshold = 0.05)$Letters
+
+lab_pos_s4 <- s4_plot_df |>
+  group_by(comparison) |>
+  summarise(y = max(distance, na.rm = TRUE), .groups = "drop") |>
+  mutate(
+    letter = letters_s4[as.character(comparison)],
+    y = y + 0.02
+  )
+
+s4_colors <- c(
+  "within Ridges" = "#F36A62",
+  "between Ridges" = "#C7A73A",
+  "within elevation\nbands" = "#66B23D",
+  "between elevation\nbands" = "#3CBF9B",
+  "within tree comparison" = "#36A9D6",
+  "between tree comparison" = "#8A6AE2",
+  "within elevation\ntree comparison" = "#E46AD0"
+)
+
+s4_turnover_plot <- ggplot(s4_plot_df, aes(x = comparison, y = distance, fill = comparison)) +
+  geom_violin(width = 0.9, alpha = 0.35, colour = NA, trim = FALSE) +
+  geom_boxplot(width = 0.22, outlier.shape = NA, alpha = 0.9) +
+  geom_text(
+    data = lab_pos_s4,
+    aes(x = comparison, y = y, label = letter),
+    inherit.aes = FALSE,
+    size = 5
+  ) +
+  scale_fill_manual(values = s4_colors) +
+  scale_y_continuous(limits = c(0.25, 1.05), breaks = c(0.25, 0.50, 0.75, 1.00)) +
+  labs(
+    x = NULL,
+    y = "Bray-Curtis dissimilarity",
+    caption = sprintf(
+      "Kruskal-Wallis: \u03C7\u00B2 = %.2f, df = %d, p < 2e-16",
+      unname(kw_s4$statistic),
+      unname(kw_s4$parameter)
+    )
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(size = 11, angle = 25, hjust = 1),
+    axis.text.y = element_text(size = 11),
+    axis.title.y = element_text(size = 12)
+  )
+
+save_fig(
+  tag = "S4_community_turnover_comparison",
+  plot = s4_turnover_plot,
+  which = "supp",
+  prefix = "none",
+  width = 12,
+  height = 8,
+  dpi = 300
+)
+
+s4_turnover_plot
+
+# --- S4 panel A: within vs between ridges/elevation bands only ---
+s4_beta_comp <- bind_rows(
+  within_sites |> mutate(comparison = "within Ridges", order = "1_ridges"),
+  between_sites |> mutate(comparison = "between Ridges", order = "1_ridges"),
+  within_elevation |> mutate(comparison = "within elevation\nbands", order = "2_elevation"),
+  between_elevation |> mutate(comparison = "between elevation\nbands", order = "2_elevation")
+)
+
+s4_beta_comp <- s4_beta_comp |>
+  mutate(
+    comparison = factor(
+      comparison,
+      levels = c(
+        "within Ridges",
+        "between Ridges",
+        "within elevation\nbands",
+        "between elevation\nbands"
+      )
+    )
+  )
+
+kw <- kruskal.test(distance ~ comparison, data = s4_beta_comp)
+
+pw <- pairwise.wilcox.test(
+  s4_beta_comp$distance,
+  s4_beta_comp$comparison,
+  p.adjust.method = "fdr",
+  exact = FALSE
+)
+
+mat <- pw$p.value
+lvls <- base::union(rownames(mat), colnames(mat))
+full <- matrix(NA_real_, length(lvls), length(lvls), dimnames = list(lvls, lvls))
+full[rownames(mat), colnames(mat)] <- mat
+full[colnames(mat), rownames(mat)] <- t(mat)
+
+pairs <- combn(lvls, 2, simplify = FALSE)
+pvec <- sapply(pairs, function(x) full[x[1], x[2]])
+names(pvec) <- sapply(pairs, paste, collapse = "-")
+
+letters <- multcompView::multcompLetters(pvec, threshold = 0.05)$Letters
+
+lab_pos <- s4_beta_comp |>
+  group_by(comparison) |>
+  summarise(y = max(distance, na.rm = TRUE), .groups = "drop") |>
+  mutate(
+    letter = letters[as.character(comparison)],
+    y = y + 0.03
+  )
+
+s4_a_plot <- ggplot(s4_beta_comp, aes(x = comparison, y = distance, fill = comparison)) +
+  geom_violin(width = 0.9, alpha = 0.35, colour = NA, trim = FALSE) +
+  geom_boxplot(width = 0.22, outlier.shape = NA, alpha = 0.9) +
+  geom_text(
+    data = lab_pos,
+    aes(x = comparison, y = y, label = letter),
+    inherit.aes = FALSE,
+    size = 5
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0.02, 0.12))) +
+  labs(
+    x = NULL,
+    y = "Bray-Curtis dissimilarity",
+    caption = sprintf(
+      "Kruskal-Wallis: \u03C7\u00B2 = %.2f, df = %d, p < 2e-16",
+      unname(kw$statistic),
+      unname(kw$parameter)
+    )
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(size = 11, angle = 25, hjust = 1),
+    axis.text.y = element_text(size = 11),
+    axis.title.y = element_text(size = 12)
+  )
+
+S4_panel <- s4_a_plot /
+  (betadisp_site_plot + theme(legend.position = "none")) /
+  (betadisp_elev_plot + theme(legend.position = "none")) +
+  plot_annotation(tag_levels = "A", tag_suffix = ")")
+
+S4_panel
+```
+
+```{r beta-within-between-statistics, echo = FALSE, warning = FALSE}
+# Kruskal-Wallis test across all groups
+kruskal_result <- kruskal.test(distance ~ comparison, data = beta_comp)
+print(kruskal_result)
+
+# Pairwise Wilcoxon tests with FDR correction
+pairwise_result <- pairwise.wilcox.test(beta_comp$distance,
+                                        beta_comp$comparison,
+                                        p.adjust.method = "fdr")
+print(pairwise_result)
+```
+
+```{r decomposition-setup, message=FALSE, warning=FALSE, results='hide', echo = FALSE}
+
+#Beta Diversity Decomposition
+# Convert to presence/absence to bee 100% sure
+zotu_pa <- zotu_df |>
+  filter(!str_detect(sample_id, "control")) |>
+  filter(!str_detect(sample_id, "CH|H")) |>
+  filter(!str_detect(sample_id, "KT1|KA5")) |>
+  filter(!str_detect(sample_id, "G_|K_")) |>
+  column_to_rownames("sample_id") |>
+  mutate(across(everything(), ~ if_else(.x > 0, 1, 0))) |>
+  as.matrix()
+
+#str(zotu_pa)
+
+# Compute beta diversity components
+beta_part <- beta.pair(zotu_pa, index.family = "sorensen")
+#str(beta_part)
+
+# This gives:
+# - beta_part$beta.sor: total dissimilarity
+# - beta_part$beta.sim: turnover
+# - beta_part$beta.sne: nestedness-resultant
+```
+
+```{r decomposition-plot, message=FALSE, warning=FALSE, results='hide', echo = FALSE}
+
+# Example: NMDS on turnover
+nmds_ohia_turn <- metaMDS(beta_part$beta.sim, k = 2, trymax = 9999)
+
+# Extract site scores and merge with metadata
+NMDSscores_ohia_turn <- scores(nmds_ohia_turn, display = "sites") |>
+  as.data.frame() |>
+  rownames_to_column("sample_id") |>
+  left_join(meta_data, by = "sample_id")
+
+# Extract stress value (as %)
+NMDSstress_ohia_turn <- round(nmds_ohia_turn$stress, 2) * 100
+
+# Stress plot
+stressplot(nmds_ohia_turn)
+
+hull_ohia_turn <-
+  NMDSscores_ohia_turn %>%
+  drop_na(sample_site) %>%
+  group_by(sample_site) %>%
+  dplyr::slice(chull(NMDS1, NMDS2))
+
+nmds_ohia_turn_plot <-  NMDSscores_ohia_turn |>
+  mutate(elev_arrow = case_when(
+    elevation == "high" ~ "\u25B2",  # ▲
+    elevation == "mid"  ~ "\u25A0",  # ■
+    elevation == "low"  ~ "\u25BC"   # ▼
+  )) |>
+  ggplot() +
+
+  # main glyph layer
+  geom_text(
+    aes(NMDS1, NMDS2, label = elev_arrow, color = sample_site),
+    size = 6, show.legend = FALSE
+  ) +
+
+  # dummy for combined shape + color legend
+  geom_point(
+    data = NMDSscores_ohia_turn |> distinct(sample_site, elevation),
+    aes(x = 999, y = 999, fill = sample_site, shape = elevation),
+    color = "black",
+    size = 4,
+    show.legend = TRUE,
+    inherit.aes = FALSE
+  ) +
+
+  # group hulls
+  geom_polygon(
+    data = hull_ohia_turn,
+    aes(NMDS1, NMDS2, color = sample_site, fill = sample_site),
+    alpha = 0.2
+  ) +
+
+  scale_color_npg() +
+  scale_fill_npg() +
+  coord_cartesian(xlim = c(-1,1), ylim = c(-1,1)) +
+  scale_shape_manual(
+    name = "Elevation",
+    values = c("high" = 24, "mid" = 22, "low" = 25)
+  ) +
+
+  labs(x = glue("MDS1 \nStress = {NMDSstress_ohia_turn} %"),
+       y = "MDS2") +
+
+  theme_classic() +
+  theme(
+    legend.title = element_text(size = 13),
+    legend.text = element_text(size = 13),
+    axis.text = element_markdown(size = 13, color = "black"),
+    axis.title = element_text(color = "black")
+  )
+
+
+nmds_ohia_turn_plot
+
+```
+
+```{r pro-test, echo = FALSE, warning = FALSE}
+pro <- protest(nmdsohia, nmds_ohia_turn)
+summary(pro)
+```
+
+```{r decomposition-stats, echo = FALSE, warning = FALSE}
+
+# Turnover matrix to average per site
+turn_mat <- as.matrix(beta_part$beta.sim)
+
+ohia_meta <- meta_data |>
+  filter(!str_detect(sample_id, "control")) |>
+  filter(!str_detect(sample_id, "CH|H")) |>
+  filter(!str_detect(sample_id, "KT1|KA5")) |>
+  filter(!str_detect(sample_id, "G_|K_")) |>
+  arrange(base::match(sample_id, rownames(turn_mat)))
+
+# Sanity check
+stopifnot(all(ohia_meta$sample_id == rownames(turn_mat)))
+
+# Calculate average pairwise turnover *within* each site
+site_turnover <- ohia_meta |>
+  select(sample_id, sample_site) |>
+  group_by(sample_site) |>
+  summarise(mean_turnover = {
+    # Get sample IDs for this site
+    ids <- sample_id
+    # Subset the matrix
+    site_dist <- turn_mat[ids, ids, drop = FALSE]
+
+    # Extract lower triangle (pairwise distances, no double-counting)
+    lower_vals <- site_dist[lower.tri(site_dist)]
+
+    # Mean of those values (NA if only 1 sample)
+    if (length(lower_vals) >= 1) mean(lower_vals) else NA_real_
+  })
+
+site_turnover
+```
+
+```{r decomposition-stats2, echo = FALSE, warning = FALSE}
+adonis_turn <- adonis2(beta_part$beta.sim ~ sample_site + elevation, data = ohia_meta)
+print(adonis_turn)
+
+turn_disp <- betadisper(beta_part$beta.sim, group = ohia_meta$sample_site)
+permutest(turn_disp)
+
+kruskal.test(mean_turnover ~ sample_site, data = site_turnover)
+
+pairwise.wilcox.test(site_turnover$mean_turnover, site_turnover$sample_site, p.adjust.method = "fdr")
+
+```
+
+```{r geospatial-distance-decay, echo = FALSE, warning = FALSE, message = FALSE}
+# Geospatial Distance Decay and Mantel Test
+# --------------------------------------------
+
+# 1. Filter metadata and ZOTU table to match Bray-Curtis community matrix
+ohia_meta <- meta_data |>
+  filter(!str_detect(sample_id, "control|CH|H|KT1")) |>
+  arrange(base::match(sample_id, zotu_df$sample_id))
+
+# 2. Filter ZOTU matrix accordingly
+zotu_df <- zotu_df |> column_to_rownames("sample_id")
+ohia_meta <- ohia_meta |> mutate(sample_id = as.character(sample_id))
+zotu_ids <- rownames(zotu_df)
+# base::intersect(ohia_meta$sample_id, zotu_ids)
+# base::setdiff(ohia_meta$sample_id, zotu_ids)
+zotu_filtered <- zotu_df[ohia_meta$sample_id, ]
+
+# 3. Calculate Bray-Curtis dissimilarity
+
+bray_dist <- vegdist(zotu_filtered, method = "bray")
+
+# 4. Compute geographic distances using longitude and latitude (Haversine in meters)
+library(geosphere)
+geo_coords <- ohia_meta |>
+  select(longitude= coord_y, latitude = coord_x) |>
+  drop_na(latitude) |>
+  drop_na(longitude)  |>
+  as.matrix()
+
+geo_dist <- distm(geo_coords, fun = distHaversine)
+rownames(geo_dist) <- ohia_meta$sample_id
+colnames(geo_dist) <- ohia_meta$sample_id
+
+# 5. Extract lower triangle for plotting distance decay
+geo_vals <- geo_dist[lower.tri(geo_dist)]
+bray_vals <- as.matrix(bray_dist)[lower.tri(as.matrix(bray_dist))]
+
+# 6. Fit and summarize linear model
+decay_model <- lm(bray_vals ~ geo_vals)
+summary(decay_model)
+
+```
+
+```{r manteltest, echo = FALSE, warning = FALSE}
+#compare geographical distance to bray curtis dissimilarity
+
+mantel_result <- mantel(as.dist(geo_dist), bray_dist, method = "pearson", permutations = 9999)
+print(mantel_result)
+
+```
+
+```{r distance-decay-plot, echo = FALSE, warning = FALSE}
+
+# 7. create plot
+# 7.1 Extract lower triangle
+bray_vals <- as.matrix(bray_dist)[lower.tri(bray_dist)]
+geo_vals <- geo_dist[lower.tri(geo_dist)]
+
+# 7.2 Create a data frame for plotting
+dist_decay_df <- data.frame(
+  geo = geo_vals,
+  bray = bray_vals
+)
+
+# 7.3 Fit linear model
+decay_model <- lm(bray ~ geo, data = dist_decay_df)
+lm_r2 <- summary(decay_model)$r.squared
+
+# 7.4 Run Mantel test
+mantel_result <- vegan::mantel(as.dist(geo_dist), bray_dist, permutations = 9999, method = "pearson")
+
+# 7.5 actual Plot
+ggplot(dist_decay_df, aes(x = geo, y = bray)) +
+  geom_point(alpha = 0.5, size = 1.5) +
+  geom_smooth(method = "lm", color = "red", se = FALSE) +
+  annotate("text", x = max(dist_decay_df$geo) * 0.8, y = .5,
+           label = paste0("Mantel r = ", round(mantel_result$statistic, 3),
+                          "\np = ", format.pval(mantel_result$signif, digits = 3),
+                          "\nR² = ", round(lm_r2, 2)),
+           hjust = 0, vjust = 1, size = 4,
+           fontface = "italic", color = "black") +
+  labs(
+    x = "Geographic distance (meters)",
+    y = "Bray-Curtis dissimilarity"
+  ) +
+  theme_minimal()
+
+
+# Save in subfolder "figues"
+```
