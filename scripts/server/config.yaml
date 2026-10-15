@@ -1,14 +1,13 @@
 # trimflow reads this file beside trimflow.py unless TRIMFLOW_CONFIG points
 # to another YAML file. Run trimflow from the directory containing your reads.
 
-# The wrapper downloads this public primer table at the start of every run.
-# Its required columns are amplicon_name, type (forward/reverse), sequence,
-# and amplicon_length_wo_primer (the expected insert length without primers).
-google_sheet_id: "1jIGCutiNClf-SXPmGK0i4-3TvWs7u_jqmjtBnsqxyLs"
-
-# Download destination, relative to the directory from which trimflow is run.
-# The CSV is refreshed before the wrapper loads the primer definitions.
+# Use the bundled paper-specific ANML table beside trimflow.py. Its sequences
+# and expected insert length are copied from the supplied primer database.
+use_bundled_primer_database: true
 primer_database_path: "primer_database.csv"
+
+# A custom configuration can retain online downloading by setting
+# use_bundled_primer_database to false and providing its own google_sheet_id.
 
 # An empty value selects the bundled trim_fasta.sh beside trimflow.py.
 # Set an absolute path here to deliberately use another compatible engine.

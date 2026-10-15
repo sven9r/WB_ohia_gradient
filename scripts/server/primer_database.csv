@@ -1,0 +1,3 @@
+alternative Name,primer_name,type,marker_name,amplicon_name,function,sequence,reverse_complement,primer_length,amplicon_length_wo_primer,amplength with primers,amplength with illumina adapt,annealing temp,citation,comment
+,LCO1490,forward,COI,ANML,metabarcoding,GGTCAACAAATCATAAAGATATTGG,,25.0,188.0,236.0,372.0,45°-50°,"Folmer et al. 1994, Molecular Marine Biology and Biotechnology",
+,CO1-CFMRa,reverse,COI,ANML,metabarcoding,GGWACTAATCAATTTCCAAATCC,GGATTTGGAAATTGATTAGTWCC,23.0,188.0,236.0,372.0,45°-50°,"Jusino et al. 2018, Mol Ecol Resour",

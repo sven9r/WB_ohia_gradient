@@ -10,8 +10,10 @@ and retains FASTQ sequence/quality records.
 
 Configuration comes from ``config.yaml`` beside this file unless the
 ``TRIMFLOW_CONFIG`` environment variable names another file. At startup the
-wrapper downloads the configured Google Sheet to ``primer_database_path`` and
-reads primer pairs and expected insert lengths from that CSV. The selected
+archive configuration reads the bundled ANML primer CSV beside this script.
+Custom configurations without ``use_bundled_primer_database: true`` retain the
+original Google Sheet download to ``primer_database_path`` in the launch working
+directory. Primer pairs and expected insert lengths come from the selected CSV;
 amplicons must match its ``amplicon_name`` values exactly, including case.
 
 The output-directory prompt controls the trimmed sequence files and UNIX merged
@@ -50,10 +52,12 @@ CONFIG_PATH = os.environ.get("TRIMFLOW_CONFIG", os.path.join(SCRIPT_DIR, "config
 def load_config(config_path):
     """Parse the selected YAML file and return its contents.
 
-    The configuration supplies primer-database and engine paths, a Google Sheet
-    ID, and inline-barcode mappings. Relative paths inside the YAML are interpreted
-    by subsequent file operations from the launch working directory. Loading
-    errors are printed and terminate the wrapper before command generation.
+    The configuration supplies primer-database and engine paths, inline-barcode
+    mappings, and an optional Google Sheet ID for online mode. With
+    ``use_bundled_primer_database: true``,
+    a relative primer-database path is resolved beside this script at startup.
+    Other relative paths retain their launch-working-directory interpretation.
+    Loading errors terminate the wrapper before command generation.
     """
     try:
         with open(config_path, "r") as file:
@@ -65,11 +69,11 @@ def load_config(config_path):
 def fetch_database(config):
     """Download the configured Google Sheet and replace the local primer CSV.
 
-    This step runs on every normal invocation, before ``load_database``. pandas
-    reads the sheet's CSV export directly; ``primer_database_path`` names the file
-    written by ``to_csv`` and then read by the wrapper. A failed download or write
-    terminates execution. The local CSV is the saved copy of that invocation's
-    database, rather than a separate automatically selected offline source.
+    Called before ``load_database`` when the configuration does not enable the
+    bundled primer database. pandas reads the sheet's CSV export directly;
+    ``primer_database_path`` names the file written by ``to_csv`` and then read
+    by the wrapper. A failed download or write terminates execution. The archive
+    configuration skips this function and reads its bundled ANML table instead.
     """
     print("Fetching primer database from Google Sheets...")
     try:
@@ -363,12 +367,17 @@ def run_apscale_pipeline(trim_fasta_path, config, amplicons, selected_amplicons,
 # Main Execution
 # =============================================================================
 
-# Importing this module defines functions only. Running it directly downloads
+# Importing this module defines functions only. Running it directly selects
 # the primer table, requests selections, and executes the generated commands.
 if __name__ == "__main__":
     config = load_config(CONFIG_PATH)
     trim_fasta_path = resolve_trim_fasta_path(config)
-    fetch_database(config)
+    if config.get("use_bundled_primer_database", False):
+        # Keep the publication table independent of the directory holding reads.
+        # os.path.join preserves an explicitly configured absolute path.
+        config["primer_database_path"] = os.path.join(SCRIPT_DIR, config["primer_database_path"])
+    else:
+        fetch_database(config)
     amplicons = load_database(config)
 
     print("\nAvailable Primers:")
