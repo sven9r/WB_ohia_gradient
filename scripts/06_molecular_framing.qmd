@@ -1,0 +1,470 @@
+---
+title: "Taxonomic resolution and biogeographic status"
+author: "Sven Weber"
+format: html
+---
+
+```{r molecular_framing_setup, include=FALSE}
+source(here::here("scripts", "00_source.R"))
+```
+
+# Taxonomic resolution for the Oʻahu community
+
+```{r taxonomy_resolution}
+b_taxonomy_df <- taxonomy_df |>
+  # Treat unresolved names consistently with the original analysis.
+  dplyr::mutate(
+    dplyr::across(
+      .cols = c("species","genus","family", "order"),
+      .fns = ~ dplyr::na_if(., "Nan")
+    )
+  ) |>
+  # Treat provisional names as unresolved.
+  dplyr::mutate(
+    dplyr::across(
+      .cols = c("species","genus","family"),
+      .fns = ~ dplyr::case_when(
+        stringr::str_detect(., regex("\\bsp\\b|\\bsp\\.\\b|\\bcf\\b|\\bcf\\.\\b|\\bspp\\b|\\bspp\\.\\b", ignore_case = TRUE)) ~ NA_character_,
+        TRUE ~ .
+      )
+    )
+  ) |>
+dplyr::mutate(
+    res_rank = dplyr::case_when(
+      perc_id >= 99 ~ "species",
+      perc_id >= 97 & perc_id < 99 ~ "genus",
+      perc_id >= 93 & perc_id < 97 ~ "family",
+      TRUE ~ "higher_or_none"),
+     res_rank = factor(res_rank, levels = c("species","genus","family","higher_or_none"))
+   ) |>
+  # Standardize ASV identifiers.
+  dplyr::mutate(
+    zotu_id = stringr::str_to_lower(zotu_id)
+  )
+
+# Join `meta_oahu` and `zotu_df` to keep only Oʻahu ASVs.
+# First pivot longer, then join retained ASVs.
+
+taxonomy_oahu <- zotu_df |>
+  tidyr::pivot_longer(
+    cols = dplyr::starts_with("zotu"),
+    names_to = "zotu_id",
+    values_to = "abundance"
+  ) |>
+  dplyr::inner_join(meta_oahu, by = "sample_id") |>
+  dplyr::select(sample_id, zotu_id, abundance) |>
+  dplyr::inner_join(b_taxonomy_df, by = "zotu_id") |>
+  dplyr::select(-sample_id, -sample_id, -abundance) |>
+  dplyr::distinct()
+```
+
+# Table 1: status assignments by method
+
+```{r status_summary}
+# Load invasive status predictions from NIClassify + BLAST mapping
+status <- read.csv(here::here("NIClassify/06_NIClassify_predict.csv")) |>
+  janitor::clean_names() |>
+  dplyr::rename(zotu_id = upid) |>
+  filter(str_detect(zotu_id, "Zotu")) |>
+  select(zotu_id, status_final = final_status, status_ni = predict)
+
+# Load BLAST/IBIS predictions from Excel (manual curation)
+status_blast <- read.xlsx(data_path("tax_invasive.xlsx"), sheet = "taxonomy")  |>
+  janitor::clean_names() |>
+  select(zotu_id, status_genus) |>
+  rename(status_blast = status_genus)
+
+#Load BOLD predictions from Excel (manual curation)
+status_bold <- read.xlsx(data_path("tax_invasive.xlsx"), sheet = "taxonomy_bold") |>
+  mutate(
+    zotu_id = stringr::str_to_lower(id),.before = "id"
+  ) |>
+  select(zotu_id, status_bold = status_genus) |>
+  #unknown needs to be NA in stauts_bold
+  mutate(
+    status_bold = ifelse(status_bold == "unknown", NA_character_, status_bold)
+  )
+
+
+# Combine and clean all invasion status sources
+status_comb <- status |>
+  left_join(status_blast, by = "zotu_id") |>
+  dplyr::rename(ibis_status = status_final) |>
+  # Convert blank strings to NA
+  mutate(across(c(ibis_status, status_ni, status_blast),
+                ~ ifelse(.x == "", NA_character_, .x))) |>
+    mutate(
+    zotu_id = stringr::str_to_lower(zotu_id)
+  ) |>
+  left_join(status_bold, by = "zotu_id") |>
+  # Normalize case and rename columns for clarity
+  mutate(
+    Ibis      = tolower(ibis_status),
+    NiClassify= tolower(status_ni),
+    BOLD      = tolower(status_bold),
+    NCBI     = tolower(status_blast),
+    zotu_id   = tolower(zotu_id)
+
+  ) |>
+  select(-contains("status"))  # drop original status columns
+
+summary_stats <- status_comb |>
+  #calculate % introduces vs native vs NA for each method
+  #first pivot longer
+  pivot_longer(cols = c(Ibis, NiClassify, NCBI, BOLD),
+               names_to = "method", values_to = "status") |>
+  mutate(
+    method = dplyr::recode(
+      method,
+      "NiClassify" = "NIClassify",
+      "Ibis" = "IBIS"
+    )
+  ) |>
+  mutate(status = dplyr::if_else(status == "unknown", NA_character_, status)) |>
+  group_by(method, status) |>
+  summarise(count = n(), .groups = "drop") |>
+  #pivot wider for nicer table
+  pivot_wider(names_from = status, values_from = count, values_fill = 0) |>
+  dplyr::rename("No information available" = "NA")
+
+
+# Use gt to export a publication-ready summary table
+summary_stats |>
+  gt() |>
+  tab_header(title = "Summary of Invasive Status Predictions") |>
+  cols_label(method = "Prediction Method") |>
+  fmt_number(columns = everything(), decimals = 0) |>
+  cols_width(everything() ~ px(150)) |>
+  tab_spanner(
+    label = "Invasive Status",
+    columns = c("introduced", "native", "No information available")
+  ) |>
+  tab_source_note(
+    source_note = "Data obtained through Ibis geolocation API, BLAST mapping paired species lookup &  NIClassify predictions"
+  )
+
+# Export Table 1.
+date_stamp <- format(Sys.Date(), "%Y_%m_%d")
+
+gtsave(
+  summary_stats |>
+    gt() |>
+    tab_header(title = "Summary of Invasive Status Predictions") |>
+    cols_label(method = "Prediction Method") |>
+    fmt_number(columns = everything(), decimals = 0) |>
+    cols_width(everything() ~ px(150)) |>
+    tab_spanner(
+      label = "Invasive Status",
+      columns = c("introduced", "native", "No information available")
+    ) |>
+    tab_source_note(
+      source_note = "Data obtained through Ibis geolocation API, BLAST mapping paired species lookup &  NIClassify predictions"
+    ),
+  filename = file.path(out_fig_main, paste0("T1_", date_stamp, "_invasive_status_summary_table.png"))
+)
+```
+
+# Figure S1: NIClassify prediction comparison
+
+```{r niclassify_prediction_comparison}
+cv_df <- readr::read_csv(here::here("NIClassify/06_NIClassify_predict.csv"), show_col_types = FALSE) |>
+  janitor::clean_names() |>
+  transmute(
+    true_label = stringr::str_to_lower(final_status),
+    pred_label = stringr::str_to_lower(predict)
+  ) |>
+  filter(
+    true_label %in% c("introduced", "native"),
+    pred_label %in% c("introduced", "native")
+  ) |>
+  mutate(
+    true_label = factor(true_label, levels = c("introduced", "native")),
+    pred_label = factor(pred_label, levels = c("introduced", "native"))
+  )
+
+cv_conf <- cv_df |>
+  count(true_label, pred_label, name = "n") |>
+  group_by(true_label) |>
+  mutate(prop = n / sum(n)) |>
+  ungroup()
+
+s1_cv_plot <- ggplot(cv_conf, aes(x = pred_label, y = true_label, fill = prop)) +
+  geom_tile(color = "white", linewidth = 0.8) +
+  geom_text(aes(label = sprintf("%.2f", prop)), color = "#f0d400", size = 6) +
+  scale_fill_viridis_c(option = "viridis", limits = c(0, 1), name = NULL) +
+  labs(x = "Predicted label", y = "True label") +
+  theme_minimal(base_size = 16) +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "right"
+  )
+
+save_fig(
+  tag = "S1_niclassify_cross_validation_confusion",
+  plot = s1_cv_plot,
+  which = "supp",
+  prefix = "none",
+  width = 8,
+  height = 6,
+  dpi = 400
+)
+```
+
+# Figure 2: taxonomic resolution and status
+
+```{r sankey_setup}
+rank_levels <- c("Species-level", "Genus-level", "Family-level", "Order-or-higher")
+
+sankey_taxonomy_df <- taxonomy_oahu |>
+  mutate(
+    res_rank = recode(
+      res_rank,
+      "species" = "Species-level",
+      "genus" = "Genus-level",
+      "family" = "Family-level",
+      "higher_or_none" = "Order-or-higher"
+    ),
+    res_rank = factor(res_rank, levels = rank_levels)
+  )
+
+materialize_nodes_links <- function(flows, node_order, node_groups) {
+  flows <- flows |>
+    filter(value > 0)
+
+  used_names <- unique(c(flows$source_name, flows$target_name))
+
+  nodes <- tibble(name = node_order) |>
+    filter(name %in% used_names) |>
+    mutate(group = unname(node_groups[name]))
+
+  links <- flows |>
+    mutate(
+      source = match(source_name, nodes$name) - 1,
+      target = match(target_name, nodes$name) - 1
+    ) |>
+    select(source, target, value, group)
+
+  list(nodes = nodes, links = links)
+}
+
+sankey_tmp_dir <- file.path(out_tables, "sankey_tmp")
+dir.create(sankey_tmp_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Reference-based status
+
+```{r sankey_reference_status}
+status_blast <- read.xlsx(data_path("tax_invasive.xlsx"), sheet = "taxonomy") |>
+  janitor::clean_names() |>
+  select(zotu_id, status_genus) |>
+  mutate(
+    zotu_id = tolower(zotu_id),
+    status_blast = case_when(
+      status_genus %in% c("native", "Native") ~ "Native",
+      status_genus %in% c("introduced", "Introduced") ~ "Introduced",
+      TRUE ~ "No information"
+    ),
+    status_blast = factor(status_blast, levels = c("Native", "Introduced", "No information"))
+  ) |>
+  select(zotu_id, status_blast)
+
+blast_df <- sankey_taxonomy_df |>
+  left_join(status_blast, by = "zotu_id") |>
+  filter(!is.na(res_rank), !is.na(status_blast))
+
+node_groups_blast <- c(
+  "Species-level" = "rank_species",
+  "Genus-level" = "rank_genus",
+  "Family-level" = "rank_family",
+  "Order-or-higher" = "rank_higher",
+  "Native" = "status_native",
+  "Introduced" = "status_introduced",
+  "No information" = "status_unknown"
+)
+
+flows_blast <- blast_df |>
+  count(res_rank, status_blast, name = "value") |>
+  transmute(
+    source_name = as.character(res_rank),
+    target_name = as.character(status_blast),
+    value = value,
+    group = case_when(
+      target_name == "Native" ~ "status_native",
+      target_name == "Introduced" ~ "status_introduced",
+      TRUE ~ "status_unknown"
+    )
+  )
+
+blast_mats <- materialize_nodes_links(
+  flows = flows_blast,
+  node_order = c(rank_levels, "Native", "Introduced", "No information"),
+  node_groups = node_groups_blast
+)
+
+colourJS_blast <- networkD3::JS("
+  d3.scaleOrdinal()
+    .domain(['rank_species','rank_genus','rank_family','rank_higher','status_native','status_introduced','status_unknown'])
+    .range(['#2ca02c','#98df8a','#ff7f0e','brown','#33A02C','#B15928','#bdbdbd'])
+")
+
+sankey_blast <- sankeyNetwork(
+  Links = blast_mats$links,
+  Nodes = blast_mats$nodes,
+  Source = "source",
+  Target = "target",
+  Value = "value",
+  NodeID = "name",
+  NodeGroup = "group",
+  LinkGroup = "group",
+  colourScale = colourJS_blast,
+  fontSize = 44,
+  nodeWidth = 34,
+  sinksRight = TRUE,
+  iterations = 0
+)
+
+sankey_blast <- htmlwidgets::onRender(
+  sankey_blast,
+  "function(el) { d3.select(el).selectAll('text').style('font-weight', '600'); }"
+)
+
+blast_html <- file.path(sankey_tmp_dir, "S3_sankey_blast.html")
+htmlwidgets::saveWidget(widget = sankey_blast, file = blast_html, selfcontained = TRUE)
+webshot2::webshot(
+  url = blast_html,
+  file = file.path(sankey_tmp_dir, "S3_sankey_blast.png"),
+  vwidth = 1500,
+  vheight = 700,
+  zoom = 2
+)
+```
+
+## NIClassify status
+
+```{r sankey_niclassify_status}
+status_ni <- read.csv(here::here("NIClassify/06_NIClassify_predict.csv")) |>
+  janitor::clean_names() |>
+  dplyr::rename(zotu_id = upid) |>
+  filter(str_detect(zotu_id, "Zotu")) |>
+  dplyr::select(zotu_id, status_ni = predict) |>
+  mutate(zotu_id = tolower(zotu_id))
+
+taxonomy_ni <- sankey_taxonomy_df |>
+  left_join(status_ni, by = "zotu_id") |>
+  mutate(
+    status_ni = case_when(
+      status_ni %in% c("native", "Native") ~ "Native",
+      status_ni %in% c("introduced", "Introduced") ~ "Introduced",
+      TRUE ~ NA_character_
+    ),
+    status_ni = factor(status_ni, levels = c("Native", "Introduced"))
+  ) |>
+  filter(!is.na(res_rank), !is.na(status_ni))
+
+node_groups_ni <- c(
+  "Species-level" = "rank_species",
+  "Genus-level" = "rank_genus",
+  "Family-level" = "rank_family",
+  "Order-or-higher" = "rank_higher",
+  "Native" = "ni_native",
+  "Introduced" = "ni_intro"
+)
+
+flows_ni <- taxonomy_ni |>
+  count(res_rank, status_ni, name = "value") |>
+  transmute(
+    source_name = as.character(res_rank),
+    target_name = as.character(status_ni),
+    value = value,
+    group = case_when(
+      target_name == "Native" ~ "ni_native",
+      TRUE ~ "ni_intro"
+    )
+  )
+
+ni_mats <- materialize_nodes_links(
+  flows = flows_ni,
+  node_order = c(rank_levels, "Native", "Introduced"),
+  node_groups = node_groups_ni
+)
+
+colourJS_ni <- networkD3::JS("
+  d3.scaleOrdinal()
+    .domain(['rank_species','rank_genus','rank_family','rank_higher','ni_native','ni_intro'])
+    .range(['#2ca02c','#98df8a','#ff7f0e','brown','#1f78b4','#e31a1c'])
+")
+
+sankey_ni <- sankeyNetwork(
+  Links = ni_mats$links,
+  Nodes = ni_mats$nodes,
+  Source = "source",
+  Target = "target",
+  Value = "value",
+  NodeID = "name",
+  NodeGroup = "group",
+  LinkGroup = "group",
+  colourScale = colourJS_ni,
+  fontSize = 44,
+  nodeWidth = 34,
+  sinksRight = TRUE,
+  iterations = 0
+)
+
+sankey_ni <- htmlwidgets::onRender(
+  sankey_ni,
+  "function(el) { d3.select(el).selectAll('text').style('font-weight', '600'); }"
+)
+
+ni_html <- file.path(sankey_tmp_dir, "S3_sankey_ni.html")
+htmlwidgets::saveWidget(widget = sankey_ni, file = ni_html, selfcontained = TRUE)
+webshot2::webshot(
+  url = ni_html,
+  file = file.path(sankey_tmp_dir, "S3_sankey_ni.png"),
+  vwidth = 1500,
+  vheight = 700,
+  zoom = 2
+)
+```
+
+## Assemble Figure 2
+
+```{r sankey_figure}
+library(cowplot)
+library(ggplot2)
+library(here)
+blast_in <- file.path(sankey_tmp_dir, "S3_sankey_blast.png")
+ni_in <- file.path(sankey_tmp_dir, "S3_sankey_ni.png")
+
+make_tagged_sankey_panel <- function(image_path, label) {
+  ggdraw() +
+    draw_image(image_path, x = 0, y = 0, width = 1, height = 0.92) +
+    draw_label(
+      label,
+      x = 0.01,
+      y = 0.99,
+      hjust = 0,
+      vjust = 1,
+      size = 11.5,
+      fontface = "plain"
+    )
+}
+
+p_blast <- make_tagged_sankey_panel(blast_in, "A)")
+p_ni <- make_tagged_sankey_panel(ni_in, "B)")
+
+combined <- plot_grid(
+  p_blast, p_ni,
+  ncol = 1,
+  align = "v"
+)
+
+save_fig(
+  tag = "F2_sankey_panel",
+  plot = combined,
+  which = "main",
+  prefix = "none",
+  width = 7.5,
+  height = 7.6,
+  dpi = 600
+)
+```
