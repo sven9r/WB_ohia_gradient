@@ -57,14 +57,6 @@
 # them. Section 3 uses the original interactive trimming program. Sections 4–6
 # run from the sequence directory containing its `2_merged_ANML.fas` output.
 #
-# Scope of the record
-# -------------------
-# The recorded quality-filter command uses VSEARCH `-fastq_maxee 1`; denoising and
-# table construction use USEARCH. These are the commands in the recovered log.
-# The log does not record the manuscript's FASTX Q33/>90% command, a complete
-# trimming configuration, or an explicit UNOISE minimum-size setting. This file
-# preserves the recovered evidence rather than supplying those missing steps.
-#
 # Check that the original external trimming implementation is available before
 # beginning any processing. An unavailable file is a missing dependency, not a
 # reason to replace the study's algorithm with a different implementation.
