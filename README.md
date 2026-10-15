@@ -18,6 +18,7 @@ The R workflow starts from processed ASV tables and saved NIClassify predictions
 | [07_status_communities.qmd](scripts/07_status_communities.qmd) | Native/introduced community structure and within-ridge distance–decay (Figure 3; S5). |
 | [server/ohia_gradient.sh](scripts/server/ohia_gradient.sh) | Commented record of the upstream ANML sequence-processing commands. |
 | [server/trimflow.py](scripts/server/trimflow.py) | Interactive primer/barcode trimming, with its matching Bash engine and configuration. |
+| [server/blast2taxonomy_v1.4.2.py](scripts/server/blast2taxonomy_v1.4.2.py) | Taxonomy annotation by [Yannis Schöneberg](https://github.com/yschoeneberg/blast2taxonomy) (full documentation); [CC0 license](scripts/server/blast2taxonomy_LICENSE). |
 
 ## Inputs
 
