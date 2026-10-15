@@ -1,13 +1,11 @@
 ---
+title: "Sampling map (Figure 1)"
 format: html
-editor: visual
 ---
 
-```{r, include=FALSE}
+```{r 01_map_chunk_01, include=FALSE}
 source(here::here("scripts/00_source.R"))
 ```
-
-# 🌍 Plot 1: Sample Design and map
 
 ```{r map_setup}
 
@@ -24,6 +22,69 @@ ohia_points <- meta_data %>%
 # Convert to sf points
 ohia_sf <- ohia_points %>%
   st_as_sf(coords = c("lon", "lat"), crs = 4326)
+
+# Tree host palette used across project figures
+tree_palette <- c(
+  "ʻōhiʻa lehua" = "#C1133D",
+  "koa" = "#8B4513",
+  "strawberry guava" = "gold"
+)
+
+# Ridge legend metadata (Δelev only)
+ridge_legend_meta <- ohia_points %>%
+  group_by(sample_site) %>%
+  summarise(
+    delta_elev_m = round(max(elevation_m, na.rm = TRUE) - min(elevation_m, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+ridge_order <- c("ʻAiea", "Kaʻala", "Mānana", "Poamoho", "Schofield-Waikāne")
+ridge_colors <- setNames(ggsci::pal_npg("nrc")(10)[1:5], ridge_order)
+ridge_labels <- ridge_legend_meta %>%
+  mutate(label = paste0(sample_site, " (\u0394elev=", delta_elev_m, " m)")) %>%
+  select(sample_site, label) %>%
+  tibble::deframe()
+
+# Ridge anchor points (true site locations)
+ridge_anchor <- ohia_points %>%
+  group_by(sample_site) %>%
+  summarise(
+    ridge_lon = median(lon, na.rm = TRUE),
+    ridge_lat = median(lat, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Hardcoded icon layout for cleaner publication placement
+site_icons <- tribble(
+  ~sample_site,           ~species,              ~icon_lon,  ~icon_lat,
+  "Kaʻala",               "ʻōhiʻa lehua",        -158.1920,  21.5100,
+  "Schofield-Waikāne",    "ʻōhiʻa lehua",        -157.8900,  21.5300,
+  "Poamoho",              "ʻōhiʻa lehua",        -157.9500,  21.5650,
+  "Mānana",               "ʻōhiʻa lehua",        -157.9630,  21.4500,
+  "Mānana",               "koa",                 -157.9410,  21.4500,
+  "Mānana",               "strawberry guava",    -157.9520,  21.4680,
+  "ʻAiea",                "ʻōhiʻa lehua",        -157.8510,  21.3710,
+  "ʻAiea",                "koa",                 -157.8290,  21.3710,
+  "ʻAiea",                "strawberry guava",    -157.8400,  21.3890
+) %>%
+  mutate(
+    image_path = case_when(
+      species == "ʻōhiʻa lehua" ~ here::here("data", "images", "ohia.png"),
+      species == "koa" ~ here::here("data", "images", "koa.png"),
+      TRUE ~ here::here("data", "images", "sberry.png")
+    )
+  )
+
+icon_group_centers <- site_icons %>%
+  group_by(sample_site) %>%
+  summarise(
+    group_lon = mean(icon_lon),
+    group_lat = mean(icon_lat),
+    .groups = "drop"
+  )
+
+leader_lines <- ridge_anchor %>%
+  left_join(icon_group_centers, by = "sample_site")
 
 # Build ridge tracks
 ridge_lines <- ohia_points %>%
@@ -66,7 +127,7 @@ elev_labels <- ohia_points %>%
   st_as_sf(coords = c("lon", "lat"), crs = 4326)
 
 # Load Hawaiʻi outline
-hawaii_outline <- ne_states(country = "United States of America", returnclass = "sf") %>%
+hawaii_outline <- rnaturalearth::ne_states(country = "United States of America", returnclass = "sf") %>%
   filter(name == "Hawaii")
 
 # Use bounding box from the island outline directly and buffer it
@@ -76,32 +137,8 @@ bbox_raw[c("xmax", "ymax")] <- bbox_raw[c("xmax", "ymax")] + 0.1
 bbox_sf <- st_as_sf(st_as_sfc(bbox_raw))
 
 
-# Define paths
-elev_path <- here::here("output", "oahu_elevation_z10.tif")
-clipped_path <- here::here("output", "oahu_elevation_clipped.tif")
-
-# Load clipped raster if it exists
-if (file.exists(clipped_path)) {
-  elev_clipped <- raster::raster(clipped_path)
-
-} else {
-  # Step 1: Load or download raw elevation
-  if (file.exists(elev_path)) {
-    elev <- raster::raster(elev_path)
-  } else {
-    elev <- get_elev_raster(locations = bbox_sf, z = 10, clip = "bbox")
-    writeRaster(elev, elev_path, overwrite = TRUE)
-  }
-
-  # Step 2: Clip to Oʻahu outline
-  elev_clipped <- crop(elev, hawaii_outline) %>%
-    raster::mask(hawaii_outline)
-  # Ensure elevation values are non-negative
-  elev_clipped[elev_clipped < 0] <- 0
-
-  # Step 3: Save clipped raster
-  writeRaster(elev_clipped, clipped_path, overwrite = TRUE)
-}
+# Elevation raster used for the manuscript map.
+elev_clipped <- raster::raster(here::here("data", "oahu_elevation_clipped.tif"))
 
 # Raster to df for plotting
 elev_df <- as.data.frame(rasterToPoints(elev_clipped))
@@ -109,14 +146,15 @@ colnames(elev_df) <- c("x", "y", "elevation")
 summary(elev_df$elevation)
 
 # Final plot
-map <- ggplot() +
+map_core <- ggplot() +
   # elevation background
   geom_tile(data = elev_df, aes(x = x, y = y, fill = elevation)) +
   scale_fill_gradient(low = "white", high = "black", guide = "none") +
-  new_scale_fill() + 
+  new_scale_fill() +
   # outline and ridges
   geom_sf(data = hawaii_outline, fill = NA, color = "black", linewidth = 0.3) +
-  geom_sf(data = ohia_tracks, aes(color = sample_site), linewidth = 1.2) +
+  geom_sf(data = ohia_tracks, aes(color = sample_site), linewidth = 1.2, show.legend = FALSE) +
+  scale_color_manual(values = ridge_colors, guide = "none") +
   # elevation labels
   geom_label_repel(
     data = elev_labels,
@@ -134,40 +172,174 @@ map <- ggplot() +
     max.overlaps = Inf,
     force = 2
   ) +
-  scale_color_npg() +
+  ggnewscale::new_scale_color() +
+  # leader lines for icon groups
+  geom_curve(
+    data = leader_lines,
+    aes(x = ridge_lon, y = ridge_lat, xend = group_lon, yend = group_lat),
+    inherit.aes = FALSE,
+    curvature = 0.08,
+    linewidth = 0.30,
+    color = "grey45"
+  ) +
+  # sampling icons and annotations
+  geom_point(
+    data = site_icons,
+    aes(x = icon_lon, y = icon_lat),
+    inherit.aes = FALSE,
+    shape = 21,
+    fill = "white",
+    color = "black",
+    stroke = 0.25,
+    size = 5.2
+  ) +
+  geom_point(
+    data = site_icons,
+    aes(x = icon_lon, y = icon_lat, color = species),
+    inherit.aes = FALSE,
+    shape = 21,
+    fill = "white",
+    stroke = 1.05,
+    size = 5.2,
+    show.legend = FALSE
+  ) +
+  geom_image(
+    data = site_icons,
+    aes(x = icon_lon, y = icon_lat, image = image_path),
+    inherit.aes = FALSE,
+    by = "width",
+    size = 0.042,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(
+    values = tree_palette,
+    guide = "none"
+  ) +
   coord_sf(xlim = c(-158.3, -157.6), ylim = c(21.25, 21.71), expand = FALSE) +
   annotation_scale(location = "bl", width_hint = 0.2) +
   annotation_north_arrow(location = "tl", which_north = "true",
                          style = north_arrow_fancy_orienteering) +
-  labs(title = "ʻŌhiʻa Ridge Sampling Tracks on Oʻahu", color = "Ridge",
+  labs(title = NULL, color = "Ridge",
        x = "", y = "") +
   theme_minimal(base_size = 12) +
   theme(
-    legend.position = "bottom",
+    legend.position = "none",
     panel.grid.major = element_line(color = "grey90"),
     axis.text.x = element_text(angle = 30, hjust = 1),
     axis.text.y = element_text(angle = 30, hjust = 1)
   )
 
+# Bottom legend helpers
+legend_cfg <- tibble(tree_circle_size = 7.0, tree_ring_stroke = 1.05, tree_png_size = 0.31)
+
+build_map_with_legend <- function(cfg) {
+  tree_legend_panel <- tibble(
+    species = c("ʻōhiʻa lehua", "koa", "strawberry guava"),
+    image_path = c(
+      here::here("data", "images", "ohia.png"),
+      here::here("data", "images", "koa.png"),
+      here::here("data", "images", "sberry.png")
+    ),
+    label_html = c(
+      "<i>Metrosideros polymorpha</i><br>(ʻōhiʻa lehua)",
+      "<i>Acacia koa</i><br>(koa)",
+      "<i>Psidium cattleyanum</i><br>(waiawī)"
+    ),
+    x = c(40, 98, 156),
+    y = 2.16
+  )
+
+  # Two aligned ridge columns across both rows (fixes column offset drift)
+  ridge_col_x <- c(40, 96, 152)
+  ridge_legend_panel <- tribble(
+    ~sample_site,           ~row_id, ~col_id,
+    "ʻAiea",                      1,       1,
+    "Kaʻala",                     1,       2,
+    "Mānana",                     1,       3,
+    "Poamoho",                    2,       1,
+    "Schofield-Waikāne",          2,       2
+  ) %>%
+    mutate(
+      sample_site = factor(sample_site, levels = ridge_order),
+      x = ridge_col_x[col_id],
+      y = if_else(row_id == 1, 1.04, 0.64),
+      label = ridge_labels[as.character(sample_site)]
+    )
+
+  legend_plot <- ggplot() +
+    geom_text(aes(x = 1.2, y = 2.16, label = "Sampled trees"), hjust = 0, size = 3.7) +
+    geom_point(
+      data = tree_legend_panel,
+      aes(x = x, y = y),
+      shape = 21,
+      fill = "white",
+      color = "black",
+      stroke = 0.25,
+      size = cfg$tree_circle_size
+    ) +
+    geom_point(
+      data = tree_legend_panel,
+      aes(x = x, y = y, color = species),
+      shape = 21,
+      fill = "white",
+      stroke = cfg$tree_ring_stroke,
+      size = cfg$tree_circle_size,
+      show.legend = FALSE
+    ) +
+    geom_image(
+      data = tree_legend_panel,
+      aes(x = x, y = y, image = image_path),
+      by = "height",
+      size = cfg$tree_png_size
+    ) +
+    ggtext::geom_richtext(
+      data = tree_legend_panel,
+      aes(x = x + 6.1, y = y, label = label_html),
+      hjust = 0,
+      vjust = 0.5,
+      size = 2.55,
+      fill = NA,
+      label.color = NA,
+      label.padding = grid::unit(rep(0, 4), "pt")
+    ) +
+    geom_text(aes(x = 1.2, y = 0.86, label = "Ridge"), hjust = 0, size = 3.7) +
+    geom_segment(
+      data = ridge_legend_panel,
+      aes(x = x - 1.5, xend = x + 0.4, y = y, yend = y, color = sample_site),
+      linewidth = 1.6
+    ) +
+    geom_text(
+      data = ridge_legend_panel,
+      aes(x = x + 1.6, y = y, label = label),
+      hjust = 0,
+      vjust = 0.5,
+      size = 2.65
+    ) +
+    scale_color_manual(values = c(tree_palette, ridge_colors), guide = "none") +
+    xlim(0, 200) +
+    ylim(0.30, 2.50) +
+    theme_void() +
+    theme(
+      legend.position = "none",
+      plot.margin = margin(0, 6, 0, 6)
+    )
+
+  map_core / legend_plot + patchwork::plot_layout(heights = c(13, 2.6))
+}
+
+map <- build_map_with_legend(legend_cfg)
+
 map
 ```
 
-Figure 1.: Ridge sampling tracks across Oʻahu, Hawaiʻi. Sampling tracks (colored by ridge) represent arthropod eDNA collections from Metrosideros polymorpha (ʻōhiʻa) along five elevation gradients. Base elevation was derived from a digital elevation model clipped to Oʻahu's outline, with values normalized to start at sea level. Labels indicate the minimum and maximum elevation of each ridge transect (in meters). Map elements include scale bar and north arrow for orientation. scale bar and north arrow for orientation.
-
 ```{r save-map}
-# Save figure in multiple formats
-# ggsave(
-#   plot = map,
-#   here::here("figures", paste0("ohia_oahu_sampling_map_", Sys.Date(), ".png")),
-#   width = 8,
-#   height = 6,
-#   dpi = 600
-# )
-
-# ggsave(
-#   plot = map,
-#   here::here("figures", paste0("ohia_oahu_sampling_map_", Sys.Date(), ".svg")),
-#   width = 8,
-#   height = 6
-# )
+save_fig(
+  tag = "F1_date_map",
+  plot = map,
+  which = "main",
+  prefix = "none",
+  width = 8,
+  height = 6,
+  dpi = 600
+)
 ```

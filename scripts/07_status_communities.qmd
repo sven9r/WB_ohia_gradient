@@ -1,0 +1,595 @@
+---
+title: "Native and introduced community structure"
+author: "Sven Weber"
+format: html
+---
+
+```{r status_communities_setup, include=FALSE}
+source(here::here("scripts", "00_source.R"))
+```
+
+# Community subsets
+
+```{r status_labels}
+# Load invasive status predictions from NIClassify + BLAST mapping
+status <- read.csv(here::here("NIClassify/06_NIClassify_predict.csv")) |>
+  janitor::clean_names() |>
+  dplyr::rename(zotu_id = upid) |>
+  filter(str_detect(zotu_id, "Zotu")) |>
+  select(zotu_id, status_final = final_status, status_ni = predict)
+
+set.seed(1337)
+```
+
+```{r community_subsets}
+# ---- community table aligned to Oʻahu ----
+comm_all <- zotu_df %>%
+  semi_join(meta_oahu %>% select(sample_id), by = "sample_id") %>%
+  mutate(across(-sample_id, ~ suppressWarnings(as.numeric(.))))  # ensure numeric
+
+# ---- map NIClassify status to ASV columns (case-insensitive) ----
+status_map <- status %>%
+  transmute(zotu_id_l = tolower(zotu_id),
+            status_final_l = tolower(status_ni)) %>%
+  filter(status_final_l %in% c("native","introduced")) %>%
+  distinct()
+
+z_cols <- setdiff(names(comm_all), "sample_id")
+z_map <- tibble(zotu_id_raw = z_cols,
+                zotu_id_l   = tolower(z_cols)) %>%
+  left_join(status_map, by = "zotu_id_l")
+
+z_native <- z_map %>% filter(status_final_l == "native") %>% pull(zotu_id_raw)
+z_intro  <- z_map %>% filter(status_final_l == "introduced") %>% pull(zotu_id_raw)
+
+# ---- split by status using tidyselect and joins ----
+comm_native <- comm_all %>%
+  select(sample_id, any_of(z_native)) %>%
+  semi_join(meta_oahu %>% select(sample_id), by = "sample_id")
+
+comm_intro <- comm_all %>%
+  select(sample_id, any_of(z_intro)) %>%
+  semi_join(meta_oahu %>% select(sample_id), by = "sample_id")
+
+# ---- metadata subset with safe ridge fallback and alignment ----
+meta_use <- meta_oahu %>%
+  select(sample_id, elevation_m, sample_site) %>%
+  mutate(ridge = coalesce(as.character(sample_site), "all_oahu")) %>%
+  mutate(ridge = factor(ridge)) %>%
+  semi_join(
+    bind_rows(
+      comm_native %>% select(sample_id),
+      comm_intro  %>% select(sample_id)
+    ) %>% distinct(),
+    by = "sample_id"
+  )
+```
+
+# Ridge structure and multivariate dispersion
+
+```{r status_dispersion}
+library(vegan)
+library(permute)
+library(dplyr)
+library(tibble)
+
+# ---------------------------
+# A) Strict sample-order checks
+# ---------------------------
+if (!"sample_id" %in% names(comm_native) || !"sample_id" %in% names(comm_intro)) {
+  stop("comm_native and comm_intro must each include a sample_id column.")
+}
+if (!all(c("sample_id", "ridge") %in% names(meta_use))) {
+  stop("meta_use must include sample_id and ridge columns.")
+}
+
+sample_ids_native <- comm_native$sample_id
+sample_ids_intro  <- comm_intro$sample_id
+sample_ids_meta   <- meta_use$sample_id
+
+if (!identical(sample_ids_native, sample_ids_intro)) {
+  stop("Sample order mismatch: comm_native vs comm_intro.")
+}
+
+# Allow safe reordering of metadata if IDs match as a set
+if (!identical(sample_ids_native, sample_ids_meta)) {
+  if (!setequal(sample_ids_native, sample_ids_meta)) {
+    stop("Sample IDs mismatch: community tables and metadata contain different samples.")
+  }
+  meta_use <- meta_use %>%
+    mutate(sample_id = as.character(sample_id)) %>%
+    slice(match(sample_ids_native, sample_id))
+  message("Reordered metadata to match community-table sample order.")
+}
+
+# ---------------------------
+# B) Bray-Curtis from community matrices (NOT NMDS coordinates)
+# ---------------------------
+native_mat <- comm_native %>%
+  column_to_rownames("sample_id") %>%
+  as.matrix()
+
+intro_mat <- comm_intro %>%
+  column_to_rownames("sample_id") %>%
+  as.matrix()
+
+native_bray <- vegdist(native_mat, method = "bray")
+intro_bray  <- vegdist(intro_mat, method = "bray")
+
+# ---------------------------------------------------------
+# C + D) Compare dispersion (introduced vs native), ridge-aware
+# ---------------------------------------------------------
+# Build one combined matrix in a common feature space (native + intro ASVs),
+# duplicating samples once per status. This allows direct PERMDISP by status.
+native_df <- as.data.frame(native_mat)
+intro_df  <- as.data.frame(intro_mat)
+
+all_asvs <- union(colnames(native_df), colnames(intro_df))
+native_df <- native_df %>% mutate(across(everything(), as.numeric))
+intro_df  <- intro_df  %>% mutate(across(everything(), as.numeric))
+
+align_to_cols <- function(df, cols) {
+  miss <- setdiff(cols, colnames(df))
+  if (length(miss) > 0) {
+    for (m in miss) df[[m]] <- 0
+  }
+  df[, cols, drop = FALSE]
+}
+
+native_common <- align_to_cols(native_df, all_asvs)
+intro_common  <- align_to_cols(intro_df, all_asvs)
+native_common[is.na(native_common)] <- 0
+intro_common[is.na(intro_common)] <- 0
+
+combined_mat <- rbind(native_common, intro_common)
+rownames(combined_mat) <- c(
+  paste0(rownames(native_common), "__native"),
+  paste0(rownames(intro_common), "__introduced")
+)
+
+status_group <- factor(
+  c(rep("native", nrow(native_common)), rep("introduced", nrow(intro_common))),
+  levels = c("native", "introduced")
+)
+ridge_group <- factor(rep(as.character(meta_use$ridge), 2))
+
+combined_bray <- vegdist(combined_mat, method = "bray")
+dispersion_by_status <- betadisper(combined_bray, group = status_group, type = "centroid")
+
+# Main permutation test: restrict permutations within ridge blocks
+perm_ctrl <- how(nperm = 9999, blocks = ridge_group)
+dispersion_perm <- permutest(dispersion_by_status, permutations = perm_ctrl)
+
+# Distances-to-centroid summaries to report
+dispersion_dist <- tibble(
+  status = status_group,
+  distance_to_centroid = dispersion_by_status$distances
+)
+dispersion_summary <- dispersion_dist %>%
+  group_by(status) %>%
+  summarise(
+    n = n(),
+    mean_distance = mean(distance_to_centroid, na.rm = TRUE),
+    median_distance = median(distance_to_centroid, na.rm = TRUE),
+    sd_distance = sd(distance_to_centroid, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# ---------------------------
+# E) Ridge structure in each subset
+# ---------------------------
+adonis_native_ridge <- adonis2(native_bray ~ ridge, data = meta_use, permutations = 9999)
+adonis_intro_ridge  <- adonis2(intro_bray  ~ ridge, data = meta_use, permutations = 9999)
+
+# Print compact outputs
+cat("\n=== PERMDISP: status (native vs introduced), permutations blocked within ridge ===\n")
+print(dispersion_perm)
+cat("\n=== Distance-to-centroid summary by status ===\n")
+print(dispersion_summary)
+
+cat("\n=== PERMANOVA: native communities ~ ridge ===\n")
+print(adonis_native_ridge)
+cat("\n=== PERMANOVA: introduced communities ~ ridge ===\n")
+print(adonis_intro_ridge)
+```
+
+# Figure 3: native and introduced ordinations
+
+```{r status_ordination_function}
+nmds_sites_status <- function(comm_tbl, meta_use, status_label, meta_full = NULL) {
+  # align to meta
+  X <- comm_tbl %>%
+    dplyr::semi_join(meta_use, by = "sample_id") %>%
+    dplyr::arrange(sample_id)
+
+  mat <- X %>%
+    dplyr::select(-sample_id) %>%
+    dplyr::mutate(across(dplyr::everything(),
+                         ~ suppressWarnings(as.numeric(.)))) %>%
+    as.matrix()
+  rownames(mat) <- X$sample_id
+
+  # drop all-zero columns
+  nz <- colSums(mat) > 0
+  mat <- mat[, nz, drop = FALSE]
+  if (nrow(mat) < 3 || ncol(mat) == 0) return(NULL)
+
+  dist_bc <- vegan::vegdist(mat, method = "bray")
+  ord     <- vegan::metaMDS(dist_bc, k = 2, trymax = 100)
+  stress_pct <- round(ord$stress, 2) * 100
+
+  scores_df <- as.data.frame(vegan::scores(ord, display = "sites"))
+  scores_df$sample_id <- rownames(scores_df)
+
+  scores_df <- scores_df %>%
+    dplyr::as_tibble()
+
+  ## ---- robust axis naming ----
+  # Older vegan: MDS1/MDS2; newer: NMDS1/NMDS2.
+  if ("MDS1" %in% names(scores_df)) {
+    scores_df <- scores_df %>%
+      dplyr::rename(NMDS1 = MDS1, NMDS2 = MDS2)
+  }
+
+  # now NMDS1 / NMDS2 definitely exist
+  out <- scores_df %>%
+    dplyr::left_join(meta_use, by = "sample_id") %>%
+    dplyr::mutate(
+      status = status_label,
+      stress_pct = stress_pct
+    )
+
+  ## ---- optional: bring in elev_band / elev_arrow from full meta ----
+  if (!is.null(meta_full) && all(c("elev_band") %in% names(meta_full))) {
+    elev_lookup <- meta_full %>%
+      dplyr::select(sample_id, elev_band) %>%
+      dplyr::distinct() %>%
+      dplyr::mutate(
+        elev_arrow = dplyr::case_when(
+          elev_band == "High" ~ "\u25B2",  # ▲
+          elev_band == "Mid"  ~ "\u25A0",  # ■
+          elev_band == "Low"  ~ "\u25BC"   # ▼
+        )
+      )
+
+    out <- out %>%
+      dplyr::left_join(elev_lookup, by = "sample_id")
+  }
+
+  out
+}
+```
+
+```{r status_ordinations}
+nmds_sites_native <- nmds_sites_status(comm_native, meta_use, "native", meta_oahu)
+nmds_sites_intro  <- nmds_sites_status(comm_intro , meta_use, "introduced", meta_oahu)
+nmds_stress_native <- unique(nmds_sites_native$stress_pct)[1]
+nmds_stress_intro  <- unique(nmds_sites_intro$stress_pct)[1]
+
+# NMDSsites_status <- dplyr::bind_rows(nmds_sites_native, nmds_sites_intro)
+
+# optional: tiny df to drive the shape legend (no effect on plot)
+band_key_status <- tibble::tibble(
+  elev_band = factor(c("High","Mid","Low"), levels = c("High","Mid","Low")),
+  NMDS1 = 1e6, NMDS2 = 1e6
+)
+
+hull_data_status_split_native <-
+  nmds_sites_native  %>%
+  tidyr::drop_na(sample_site) %>%
+  dplyr::group_by(status, sample_site) %>%
+  dplyr::filter(dplyr::n() >= 3) %>%
+  dplyr::slice(chull(NMDS1, NMDS2)) %>%
+  dplyr::ungroup()
+
+
+hull_data_status_split_intro <-
+  nmds_sites_intro  %>%
+  tidyr::drop_na(sample_site) %>%
+  dplyr::group_by(status, sample_site) %>%
+  dplyr::filter(dplyr::n() >= 3) %>%
+  dplyr::slice(chull(NMDS1, NMDS2)) %>%
+  dplyr::ungroup()
+```
+
+```{r status_ordination_figure}
+nmds_status_plot_native <- ggplot(nmds_sites_native) +
+  # match Figure 2 aesthetics: filled symbols by elevation band, ridge colors in hulls
+  geom_point(
+    aes(NMDS1, NMDS2, fill = sample_site, shape = elev_band),
+    colour = "black", size = 4.2, stroke = 1.1, show.legend = FALSE
+  ) +
+
+  # ridge hulls: FILL gives ridge legend, outline fixed
+  geom_polygon(
+    data = hull_data_status_split_native,
+    aes(NMDS1, NMDS2, fill = sample_site, group = sample_site),
+    color = "grey30", linewidth = 0.6, alpha = 0.20,
+    show.legend = TRUE, key_glyph = ggplot2::draw_key_rect
+  ) +
+
+  # dummy points drive the Elevation band SHAPE legend
+  geom_point(
+    data = band_key_status,
+    aes(NMDS1, NMDS2, shape = elev_band),
+    colour = "black", size = 4.2, stroke = 1.1,
+    inherit.aes = FALSE, show.legend = TRUE
+  ) +
+
+  # elevation band legend (▲ High, ■ Mid, ▼ Low)
+  scale_shape_manual(
+    name   = "Elevation band\nbased on Jenks",
+    breaks = c("High","Mid","Low"),
+    values = c(High = 24, Mid = 22, Low = 25),
+    guide  = guide_legend(
+      order = 1,
+      override.aes = list(fill = NA, colour = "black", size = 4.2, stroke = 1.1)
+    )
+  ) +
+
+  # ridge patches (same as your working plot)
+  scale_fill_npg(
+    name = "Ridges on Oʻahu",
+    guide = guide_legend(
+      order = 2,
+      key_glyph   = ggplot2::draw_key_rect,
+      override.aes = list(shape = NA, colour = NA, alpha = 1)
+    )
+  ) +
+  scale_colour_npg(guide = "none") +
+
+  coord_cartesian(
+    xlim = c(-2.25,2.25),
+    ylim = c(-2,2)
+    ) +
+  labs(
+    x = glue::glue("MDS1 \nStress = {nmds_stress_native} %"),
+    y = "MDS2",
+    tag = "A) Native"
+  ) +
+  theme_classic() +
+  theme(
+      legend.position = "none",
+      legend.box = "vertical",
+      legend.title = element_text(size = 14),
+      legend.text  = element_text(size = 12),
+      axis.text    = element_markdown(size = 13, color = "black"),
+      axis.title   = element_text(color = "black")
+    )
+
+
+nmds_status_plot_intro <- ggplot(nmds_sites_intro) +
+  # match Figure 2 aesthetics: filled symbols by elevation band, ridge colors in hulls
+  geom_point(
+    aes(NMDS1, NMDS2, fill = sample_site, shape = elev_band),
+    colour = "black", size = 4.2, stroke = 1.1, show.legend = FALSE
+  ) +
+
+  # ridge hulls: FILL gives ridge legend, outline fixed
+  geom_polygon(
+    data = hull_data_status_split_intro,
+    aes(NMDS1, NMDS2, fill = sample_site, group = sample_site),
+    color = "grey30", linewidth = 0.6, alpha = 0.20,
+    show.legend = TRUE, key_glyph = ggplot2::draw_key_rect
+  ) +
+
+  # dummy points drive the Elevation band SHAPE legend
+  geom_point(
+    data = band_key_status,
+    aes(NMDS1, NMDS2, shape = elev_band),
+    colour = "black", size = 4.2, stroke = 1.1,
+    inherit.aes = FALSE, show.legend = TRUE
+  ) +
+
+  # elevation band legend (▲ High, ■ Mid, ▼ Low)
+  scale_shape_manual(
+    name   = "Elevation band\nbased on Jenks",
+    breaks = c("High","Mid","Low"),
+    values = c(High = 24, Mid = 22, Low = 25),
+    guide  = guide_legend(
+      order = 1,
+      override.aes = list(fill = NA, colour = "black", size = 4.2, stroke = 1.1)
+    )
+  ) +
+
+  # ridge patches (same as your working plot)
+  scale_fill_npg(
+    name = "Ridges on Oʻahu",
+    guide = guide_legend(
+      order = 2,
+      key_glyph   = ggplot2::draw_key_rect,
+      override.aes = list(shape = NA, colour = NA, alpha = 1)
+    )
+  ) +
+  scale_colour_npg(guide = "none") +
+
+  coord_cartesian(
+    xlim = c(-2.25,2.25),
+    ylim = c(-2,2)
+    ) +
+
+  labs(
+    x = glue::glue("MDS1 \nStress = {nmds_stress_intro} %"),
+    y = "MDS2",
+    tag = "B) Introduced"
+  ) +
+  theme_classic() +
+  theme(
+      legend.position = "right",
+      legend.box = "vertical",
+      legend.title = element_text(size = 14),
+      legend.text  = element_text(size = 12),
+      axis.text    = element_markdown(size = 13, color = "black"),
+      axis.title   = element_text(color = "black")
+    )
+
+```
+
+## NMDS panel
+```{r NMDS-panel-status}
+
+nmds_panel_supp <-
+nmds_status_plot_native + nmds_status_plot_intro +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "right",
+        legend.box = "vertical",
+        plot.tag = element_text(size = 16))
+
+
+
+
+save_fig(
+  tag   = "F3_nmds_status",
+  plot  = nmds_panel_supp,
+  which = "main",
+  prefix = "none",
+  width  = 12,
+  height = 8
+)
+```
+
+# Figure S5: distance decay within ridges
+
+```{r status_distance_decay}
+# coords from meta (lon = coord_x, lat = coord_y)
+meta_coords <- meta_use %>%
+  dplyr::select(sample_id, ridge) %>%
+  dplyr::left_join(
+    meta_oahu %>% dplyr::select(sample_id, coord_x, coord_y),
+    by = "sample_id"
+  ) %>%
+  dplyr::filter(!is.na(coord_x), !is.na(coord_y)) %>%
+  dplyr::distinct(sample_id, .keep_all = TRUE)
+
+# --- robust distance helper: works for degrees or projected meters ---
+dist_km_from_meta <- function(df_xy) {
+  stopifnot(all(c("coord_x","coord_y") %in% names(df_xy)))
+  deg_like <- all(df_xy$coord_x >= -180 & df_xy$coord_x <= 180 &
+                  df_xy$coord_y >=  -90 & df_xy$coord_y <=  90)
+
+  coords <- as.matrix(df_xy[, c("coord_x","coord_y")])
+
+  if (deg_like) {
+    # lon,lat in degrees -> great-circle distance (km)
+    geosphere::distm(coords, fun = geosphere::distHaversine) / 1000
+  } else {
+    # projected meters -> Euclidean (km)
+    as.matrix(stats::dist(coords, method = "euclidean")) / 1000
+  }
+}
+
+coords_df <- meta_coords %>%
+  dplyr::select(coord_x, coord_y)
+
+dist_km <- dist_km_from_meta(coords_df)
+
+pairwise_decay <- function(comm_tbl, label) {
+  comm_tbl <- comm_tbl %>% dplyr::semi_join(meta_coords, by = "sample_id")
+
+  ridges_here <- meta_coords %>%
+    dplyr::semi_join(comm_tbl, by = "sample_id") %>%
+    dplyr::distinct(ridge) %>%
+    dplyr::pull(ridge)
+
+  purrr::map_dfr(ridges_here, function(r) {
+    ids <- meta_coords %>%
+      dplyr::filter(ridge == r, sample_id %in% comm_tbl$sample_id) %>%
+      dplyr::pull(sample_id)
+
+    if (length(ids) < 2) return(tibble::tibble())
+
+    X <- comm_tbl %>%
+      dplyr::semi_join(tibble::tibble(sample_id = ids), by = "sample_id") %>%
+      dplyr::arrange(match(sample_id, ids))
+
+    mat <- X %>%
+      dplyr::select(-sample_id) %>%
+      dplyr::mutate(across(dplyr::everything(), ~ suppressWarnings(as.numeric(.)))) %>%
+      as.matrix()
+    rownames(mat) <- X$sample_id
+
+    nz <- colSums(mat) > 0
+    mat <- mat[, nz, drop = FALSE]
+    if (ncol(mat) == 0) return(tibble::tibble())
+
+    bc <- as.matrix(vegan::vegdist(mat, method = "bray"))
+
+    coords_df <- meta_coords %>%
+      dplyr::filter(sample_id %in% ids) %>%
+      dplyr::arrange(match(sample_id, ids)) %>%
+      dplyr::select(coord_x, coord_y)
+
+    dist_km <- dist_km_from_meta(coords_df)
+
+    upper <- which(upper.tri(bc), arr.ind = TRUE)
+    tibble::tibble(
+      ridge    = r,
+      site1    = ids[upper[,1]],
+      site2    = ids[upper[,2]],
+      bc       = bc[upper],
+      dist_km  = dist_km[upper],
+      status   = label
+    )
+  })
+}
+
+# build pairwise tables for both statuses
+dd_native_pairs <- pairwise_decay(comm_native, "native")
+dd_intro_pairs  <- pairwise_decay(comm_intro , "introduced")
+dd_pairs        <- dplyr::bind_rows(dd_native_pairs, dd_intro_pairs) %>%
+  dplyr::filter(is.finite(bc), is.finite(dist_km), dist_km > 0)
+
+# slope per ridge and status (Bray–Curtis ~ log10 distance)
+slopes <- dd_pairs %>%
+  dplyr::group_by(status, ridge) %>%
+  dplyr::summarise(
+    slope = coef(lm(bc ~ log10(dist_km)))[2],
+    .groups = "drop"
+  )
+
+print(slopes)
+
+# Compare ridge-specific slopes by status.
+mod_E <- stats::lm(slope ~ status, data = slopes)
+print(summary(mod_E))  # statusnative coefficient: more negative = steeper native decay
+
+# ---- Figures ----
+
+# 1) Slope comparison (publication panel)
+pE_slopes <- ggplot2::ggplot(slopes, ggplot2::aes(x = status, y = slope, fill = status)) +
+  ggplot2::geom_boxplot(width = 0.6, color = "grey30", alpha = 0.85, outlier.shape = NA) +
+  ggplot2::geom_jitter(width = 0.08, height = 0, size = 2, alpha = 0.9) +
+  ggplot2::scale_fill_manual(values = c(native = "#377EB8", introduced = "#E41A1C")) +
+  ggplot2::labs(
+    y = "Slope of Bray–Curtis vs log10(distance km)",
+    x = NULL
+  ) +
+  ggplot2::theme_classic(base_size = 12) +
+  ggplot2::theme(legend.position = "none")
+
+
+# 2) Pairwise distances and fitted lines by status
+pE_scatter <- ggplot2::ggplot(dd_pairs, ggplot2::aes(x = log10(dist_km), y = bc, color = status)) +
+  ggplot2::geom_point(alpha = 0.35, size = 1.6) +
+  ggplot2::geom_smooth(method = "lm", se = FALSE, linewidth = 1.0) +
+  ggplot2::scale_color_manual(values = c(native = "#377EB8", introduced = "#E41A1C")) +
+  ggplot2::labs(x = "log10 geographic distance (km)", y = "Bray–Curtis dissimilarity") +
+  ggplot2::theme_classic(base_size = 12)
+
+pE_panel <- pE_slopes + pE_scatter +
+  plot_layout(guides = "collect") +
+  plot_annotation(
+              tag_levels = "A", tag_suffix = ')') &
+  theme(legend.position = "bottom",
+        plot.tag = element_text(size = 16))
+
+# Export Figure S5.
+save_fig(
+  tag    = "S5_distance_decay_invasive_noninvasive",
+  plot   = pE_panel,
+  which  = "supp",
+  prefix = "none",
+  width  = 10,
+  height = 5
+)
+```

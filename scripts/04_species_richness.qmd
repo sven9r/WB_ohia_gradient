@@ -1,0 +1,452 @@
+---
+title: "Richness, nativeness, elevation and rainfall"
+format: html
+---
+
+```{r richness_setup, include=FALSE}
+source(here::here("scripts", "00_source.R"))
+```
+
+# Figure S6: Richness and native ASV proportions along elevation
+
+```{r elevation_richness_plot}
+sr_hight <-
+  meta_data %>%
+  filter(island == "Oahu") |>
+  filter(commonname == "ʻōhiʻa Lehua") |>
+  filter(sample_id != "KT1") |>
+  filter(sample_id != "KA5") |>
+  filter(!str_detect(shortname, "control")) |>
+  drop_na(elevation) |>
+  mutate(elev_arrow = case_when(
+    elev_band == "High" ~ "\u25B2",  # ▲
+    elev_band == "Mid"  ~ "\u25A0",  # ■
+    elev_band == "Low"  ~ "\u25BC"   # ▼
+    ),
+    elevation_d = factor(elev_band, levels = c("High", "Mid", "Low"))
+  )
+
+
+# Place legend-only points outside the plotting range
+legend_df_sr <- sr_hight %>%
+  distinct(sample_site, elevation_m, elev_band) %>%
+  mutate(x = max(sr_hight$elevation_m, na.rm = TRUE) + 1e6,
+         y = max(sr_hight$richness, na.rm = TRUE) + 1e6) |>
+  mutate(elevation_d = factor(elev_band))
+
+sr_height_plot <-
+  sr_hight %>%
+  ggplot() +
+  geom_point(aes(x = elevation_m, y = richness,
+                 fill = sample_site, shape = elevation_d),
+             size = 4, stroke = 1.1, color = "black", show.legend = FALSE) +
+  # ridge-specific LMs (kept in legend)
+  geom_smooth(aes(x = elevation_m, y = richness, color = sample_site),
+              method = "lm", se = FALSE, size = 1.1) +
+  # global LM (black; no legend)
+  geom_smooth(aes(x = elevation_m, y = richness),
+              method = "lm", se = TRUE, color = "black", size = 1,
+              show.legend = FALSE) +
+  # legend-only points to expose SHAPE = elevation band
+  geom_point(data = legend_df_sr,
+             aes(x = x, y = y, color = sample_site, shape = elevation_d),
+             size = 4, alpha = 1, stroke = 1.1, inherit.aes = FALSE, show.legend = TRUE) +
+  scale_color_npg(
+    name = "Ridge",
+    guide = guide_legend(override.aes = list(linetype = 0, shape = 16, size = 4))
+  ) +
+  scale_fill_npg(guide = "none") +
+  scale_shape_manual(
+    name   = "Elevation band",
+    breaks = c("High","Mid","Low"),
+    values = c(High = 24, Mid = 22, Low = 25)  # ▲ ■ ▼
+  ) +
+  coord_cartesian(xlim = c(250, 1250), c(12,100)) +
+  labs(x = "", y = "ASV richness") +
+  theme_classic() +
+  theme(legend.position = "right",
+        legend.title = element_text(size = 12),
+        legend.text  = element_text(size = 11))
+```
+
+```{r richness_linear_model}
+mod1 <- lm(richness ~ elevation_m, data = sr_hight)
+summary(mod1)
+```
+
+```{r richness_ridge_model}
+mod2 <- lm(richness ~ elevation_m + sample_site, data = sr_hight)
+summary(mod2)
+```
+
+```{r richness_mixed_model}
+mod3 <- lmer(richness ~ elevation_m + (1|sample_site), data = sr_hight)
+summary(mod3)
+```
+
+```{r native_proportion_plot}
+# uses presence (ZOTU present in sample) to avoid read-count bias
+# requires: zotu_df (wide, sample_id + zotu* cols), meta_data, status (zotu_id + NiClassify)
+
+
+# 1) long presence table
+zotu_long <-
+  zotu_df |>
+  pivot_longer(starts_with("zotu"), names_to = "zotu", values_to = "reads") |>
+  filter(reads > 0)
+
+# Load NIClassify nativeness predictions
+status <- read.csv(here::here("NIClassify/06_NIClassify_predict.csv")) |>
+  janitor::clean_names() |>
+  dplyr::rename(zotu_id = upid) |>
+  mutate(zotu_id = tolower(zotu_id)) |>
+  filter(str_detect(zotu_id, "zotu")) |>
+  select(zotu_id, status_final = final_status, status_ni = predict)
+
+# 3) clean classifier labels and join
+classif <-
+  status |>
+  select(zotu_id, NiClassify = status_ni) |>
+  mutate(NiClassify = tolower(NiClassify)) |>
+  rename(zotu = zotu_id) |>
+  mutate(cls = case_when(
+    str_to_lower(NiClassify) %in% c("native","endemic") ~ "native",
+    str_to_lower(NiClassify) %in% c("introduced","invasive","non-native") ~ "introduced",
+    TRUE ~ "unknown"
+  )) |>
+  select(zotu, cls)
+
+samp_comp <-
+  zotu_long |>
+  inner_join(classif, by = "zotu") |>
+    filter(!str_detect(sample_id, "control")) |>
+  filter(!str_detect(sample_id, "CH|H")) |>
+  filter(!str_detect(sample_id, "KT1")) |>
+  filter(!str_detect(sample_id, "KA5")) |>
+  filter(!str_detect(sample_id, "K_|G_")) |>
+  mutate(cls = replace_na(cls, "unknown")) |>
+  count(sample_id, cls, name = "n_zotus") |>
+  group_by(sample_id) |>
+  mutate(pct = n_zotus / sum(n_zotus)) |>
+  ungroup() |>
+  select(sample_id, cls, pct) |>
+  pivot_wider(names_from = cls, values_from = pct, values_fill = 0) |>
+  # guarantee columns exist
+  mutate(native = ifelse(is.na(native), 0, native),
+         introduced = ifelse(is.na(introduced), 0, introduced))
+
+# Join sample metadata for the standardized ʻōhiʻa gradients
+invasion_heigt <-
+  meta_data |>
+    filter(!str_detect(sample_id, "control")) |>
+    filter(!str_detect(sample_id, "CH|H")) |>
+    filter(!str_detect(sample_id, "KT1")) |>
+    filter(!str_detect(sample_id, "KA5")) |>
+    filter(!str_detect(sample_id, "K_|G_")) |>
+    select(sample_id, sample_site, elevation_m, richness, elev_band) |>
+    inner_join(samp_comp, by = "sample_id") |>
+    mutate(
+      elev_arrow = case_when(
+        elev_band == "High" ~ "\u25B2",   # ▲
+        elev_band == "Mid"  ~ "\u25A0",   # ■
+        elev_band == "Low"  ~ "\u25BC",   # ▼
+        TRUE ~ "\u25CF"                    # • fallback
+      ),
+      elevation_d = factor(elev_band, levels = c("High", "Mid", "Low"))
+    )
+
+# legend-only layer (off-plot) for shapes
+legend_df_inv <- invasion_heigt %>%
+  distinct(sample_site, elevation_m, elev_band) %>%
+  mutate(x = max(invasion_heigt$elevation_m, na.rm = TRUE) + 1e6,
+         y = max(invasion_heigt$native * 100, na.rm = TRUE) + 1e6) |>
+  mutate(elevation_d = factor(elev_band))
+
+
+invasion_height_plot <-
+  invasion_heigt %>%
+  ggplot() +
+  geom_point(aes(x = elevation_m, y = native * 100,
+                 fill = sample_site, shape = elevation_d),
+             size = 4, stroke = 1.1, color = "black", show.legend = FALSE) +
+  # ridge-specific lms (keep in legend)
+  geom_smooth(aes(x = elevation_m, y = native * 100, color = sample_site),
+              method = "lm", se = FALSE, size = 1.1) +
+  # global lm (no legend)
+  geom_smooth(aes(x = elevation_m, y = native * 100),
+              method = "lm", se = TRUE, color = "black", size = 1,
+              show.legend = FALSE) +
+  # legend-only points to expose shapes for elevation
+  geom_point(data = legend_df_inv,
+             aes(x = x, y = y, color = sample_site, shape = elevation_d),
+             size = 4, alpha = 1, stroke = 1.1, inherit.aes = FALSE, show.legend = TRUE) +
+  scale_color_npg(
+    name = "Ridge",
+    guide = guide_legend(override.aes = list(linetype = 0, shape = 16, size = 4))
+  ) +
+  scale_fill_npg(guide = "none") +
+  scale_shape_manual(
+    name   = "Elevation band",
+    breaks = c("High","Mid","Low"),
+    values = c(High = 24, Mid = 22, Low = 25)  # ▲ ■ ▼
+  ) +
+  coord_cartesian(xlim = c(250,1250), c(20,77)) +
+  labs(x = "Elevation (m)", y = "% Native (presence-based)") +
+  theme_classic() +
+  theme(legend.position = "right",
+        legend.title = element_text(size = 12),
+        legend.text  = element_text(size = 11))
+```
+
+```{r elevation_linear_models}
+mod4 <- lm(I(native*100) ~ richness, data = invasion_heigt)
+mod5 <- lm(I(native*100) ~ elevation_m, data = invasion_heigt)
+mod6 <- lm(richness ~ elevation_m, data = invasion_heigt)
+
+summary(mod4)
+summary(mod5)
+summary(mod6)
+```
+
+```{r elevation_mixed_models}
+# % native ~ richness + elevation, random intercept for ridge
+m_nat_mix <- lmer(I(native*100) ~ richness + elevation_m + (1|sample_site), data = invasion_heigt)
+
+# % introduced ~ richness + elevation, random intercept for ridge
+m_intro_mix <- lmer(I(introduced*100) ~ richness + elevation_m + (1|sample_site), data = invasion_heigt)
+
+# Richness ~ elevation, random intercept for ridge
+m_rich_mix <- lmer(richness ~ elevation_m + (1|sample_site), data = invasion_heigt)
+
+summary(m_nat_mix)
+summary(m_intro_mix)
+summary(m_rich_mix)
+```
+
+```{r elevation_panel}
+height_cont_panel <-
+sr_height_plot / invasion_height_plot + plot_layout(guides = "collect") +
+  plot_annotation(tag_levels = "A", tag_suffix = ")") &
+  theme(
+    legend.position = "right",
+    legend.box = "vertical"
+  )
+
+height_cont_panel
+
+save_fig(
+  tag = "S6_elevation_richness_invasion",
+  plot = height_cont_panel,
+  which = "supp",
+  prefix = "none",
+  width = 10,
+  height = 12,
+  dpi = 600
+)
+```
+
+# Figure S7: Rainfall, richness and native ASV proportions
+
+```{r rainfall_elevation_plot}
+meta_oahu <- meta_data %>%
+  filter(island == "Oahu") %>%
+  mutate(elevation = fct_recode(as.factor(elevation),
+                                High = "high", Mid = "mid", Low = "low"))
+
+rain_elev_plot <-
+  ggplot(meta_oahu, aes(x = elevation_m, y = rainfall)) +
+  # use fill for Ridge colors + shape for elevation band
+  geom_point(aes(fill = sample_site, shape = elevation),
+             size = 4, color = "black", stroke = 1.1) +
+  geom_smooth(method = "loess", se = TRUE, color = "black", span = 0.9) +
+  # legends: shapes = elevation band, filled points = ridge
+  scale_shape_manual(
+    name   = "Elevation band",
+    breaks = c("High","Mid","Low"),
+    values = c(High = 24, Mid = 22, Low = 25)  # ▲ ■ ▼
+  ) +
+  scale_fill_npg(name = "Ridge") +
+  guides(
+    # make the Ridge legend use a fillable symbol so colors show up
+    fill  = guide_legend(override.aes = list(shape = 21, size = 4, color = "black"), order = 2),
+    shape = guide_legend(order = 1)
+  ) +
+  labs(x = "Elevation (m)", y = "Rainfall (mm)") +
+  theme_classic() +
+  theme(
+    legend.position = "right",
+    legend.title    = element_text(size = 12),
+    legend.text     = element_text(size = 11)
+  ) +
+  guides(color = "none",
+         shape = "none",
+         fill = "none")
+```
+
+```{r rainfall_response_plots}
+invasion_heigt <-
+  meta_data |>
+    filter(!str_detect(sample_id, "control")) |>
+    filter(!str_detect(sample_id, "CH|H")) |>
+    filter(!str_detect(sample_id, "KT1")) |>
+    filter(!str_detect(sample_id, "KA5")) |>
+    filter(!str_detect(sample_id, "K_|G_")) |>
+    select(sample_id, sample_site, elevation_m, rainfall, richness, elev_band) |>
+    inner_join(samp_comp, by = "sample_id") |>
+    mutate(
+      elev_arrow = case_when(
+        elev_band == "High" ~ "\u25B2",   # ▲
+        elev_band == "Mid"  ~ "\u25A0",   # ■
+        elev_band == "Low"  ~ "\u25BC",   # ▼
+        TRUE ~ "\u25CF"
+      ),
+      elevation_d = factor(elev_band, levels = c("High", "Mid", "Low"))
+    )
+
+
+# legend-only points placed *inside* the panel
+legend_df_rain_sr <- sr_hight |>
+  distinct(sample_site, elev_band) |>
+  mutate(
+    x = max(sr_hight$rainfall, na.rm = TRUE) + 1e6,   # well outside x axis
+    y = max(sr_hight$richness, na.rm = TRUE) + 1e6,   # well outside y axis
+    elevation_d = factor(elev_band, levels = c("High","Mid","Low"))
+  )
+
+rain_rich_plot <-
+  sr_hight |>
+    ggplot() +
+  geom_point(
+    aes(x = rainfall, y = richness, fill = sample_site, shape = elevation_d),
+    size = 4, stroke = 1.1, color = "black", show.legend = FALSE
+  ) +
+  # ridge-specific LMs (stay in legend)
+  geom_smooth(aes(x = rainfall, y = richness, color = sample_site),
+              method = "lm", se = FALSE, size = 1.1, show.legend = FALSE) +
+  # global LM (black; no legend)
+  geom_smooth(aes(x = rainfall, y = richness),
+              method = "lm", se = TRUE, color = "black", size = 1,
+              show.legend = FALSE) +
+  # legend-only points to expose fill (ridge) + shape (elevation)
+  geom_point(data = legend_df_rain_sr,
+             aes(x = 0, y = 0, fill = sample_site, shape = elevation_d),
+             color = "black", size = 4, alpha = 1, stroke = 1.1, inherit.aes = FALSE, show.legend = TRUE) +
+  coord_cartesian(xlim = c(min(sr_hight$rainfall, na.rm = TRUE) - 50,
+                           max(sr_hight$rainfall, na.rm = TRUE) + 50)) +
+  scale_color_npg(guide = "none") +
+  scale_fill_npg(name = "Ridge") +
+  scale_shape_manual(
+    name   = "Elevation band",
+    breaks = c("High","Mid","Low"),
+    values = c(High = 24, Mid = 22, Low = 25)   # ▲ ■ ▼
+  ) +
+  labs(x = "Rainfall (mm)", y = "ASV richness") +
+  theme_classic() +
+  theme(legend.position = "right",
+        legend.title = element_text(size = 12),
+        legend.text  = element_text(size = 11)) +
+  guides(
+    fill = guide_legend(
+      order = 2,
+      override.aes = list(shape = 21, size = 4, color = "black", linetype = 0)
+    ),
+    shape = guide_legend(
+      order = 1,
+      override.aes = list(fill = NA, color = "black", linetype = 0)
+    )
+  )
+
+# legend-only points for shapes (use elevation band), invisible in panel
+legend_df_rain_nat <- invasion_heigt |>
+  distinct(sample_site, elev_band) |>
+  mutate(
+    elevation_d = factor(elev_band, levels = c("High","Mid","Low"))
+  )
+
+rain_native_plot <-
+  invasion_heigt |>
+  ggplot() +
+  geom_point(
+    aes(x = rainfall, y = native * 100, fill = sample_site, shape = elevation_d),
+    size = 4, stroke = 1.1, color = "black", show.legend = FALSE
+  ) +
+  # ridge-specific LMs (kept in legend)
+  geom_smooth(aes(x = rainfall, y = native * 100, color = sample_site),
+              method = "lm", se = FALSE, size = 1.1, show.legend = FALSE) +
+  # global LM (black; no legend)
+  geom_smooth(aes(x = rainfall, y = native * 100),
+              method = "lm", se = TRUE, color = "black", size = 1,
+              show.legend = FALSE) +
+  # legend-only points to expose SHAPE = elevation band
+  geom_point(data = legend_df_rain_nat,
+             aes(x = 0, y = 0, fill = sample_site, shape = elevation_d),
+             color = "black", size = 4, alpha = 1, stroke = 1.1, inherit.aes = FALSE, show.legend = TRUE) +
+  coord_cartesian(
+    xlim = c(min(invasion_heigt$rainfall, na.rm = TRUE) - 50,
+             max(invasion_heigt$rainfall, na.rm = TRUE) + 50)
+  ) +
+  scale_color_npg(guide = "none") +
+  scale_fill_npg(name = "Ridge") +
+  scale_shape_manual(
+    name   = "Elevation band",
+    breaks = c("High","Mid","Low"),
+    values = c(High = 24, Mid = 22, Low = 25)   # ▲ ■ ▼
+  ) +
+  labs(x = "Rainfall (mm)", y = "% Native (presence-based)") +
+  theme_classic() +
+  theme(legend.position = "right",
+        legend.title = element_text(size = 12),
+        legend.text  = element_text(size = 11)) +
+  guides(
+    fill = guide_legend(
+      order = 2,
+      override.aes = list(shape = 21, size = 4, color = "black", linetype = 0)
+    ),
+    shape = guide_legend(
+      order = 1,
+      override.aes = list(fill = NA, color = "black", linetype = 0)
+    )
+  )
+```
+
+```{r rainfall_linear_model}
+mod_nat_full <- lm(I(native*100) ~ elevation_m + rainfall + richness, data = invasion_heigt)
+summary(mod_nat_full)
+```
+
+```{r rainfall_mixed_model}
+m_nat_full_mix <- lmer(I(native*100) ~ elevation_m + rainfall + richness + (1|sample_site),
+                       data = invasion_heigt)
+summary(m_nat_full_mix)
+```
+
+```{r rainfall_panel, fig.width=12, fig.height=14}
+rain_panel <-
+  (rain_elev_plot +
+     theme(legend.position = "none")) /
+  (rain_rich_plot +
+     theme(legend.position = "right")) /
+  (rain_native_plot +
+     theme(legend.position = "none")) +
+  plot_annotation(
+    tag_levels = "A", tag_suffix = ")"
+  ) &
+  theme(
+    plot.tag = element_text(size = 16),
+    legend.title = element_text(size = 13),
+    legend.text = element_text(size = 13)
+  )
+
+
+rain_panel
+
+save_fig(
+  tag = "S7_rainfall_panel",
+  plot = rain_panel,
+  which = "supp",
+  prefix = "none",
+  width = 12,
+  height = 14,
+  dpi = 600
+)
+```

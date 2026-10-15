@@ -1,0 +1,522 @@
+---
+title: "ASV overlap and nativeness"
+format: html
+---
+
+```{r overlap_setup, include=FALSE}
+source(here::here("scripts", "00_source.R"))
+```
+
+# Status assignments
+
+```{r status_assignments}
+# Load nativeness predictions from NIClassify + BLAST mapping
+status <- read.csv(here::here("NIClassify/06_NIClassify_predict.csv")) |>
+  janitor::clean_names() |>
+  dplyr::rename(zotu_id = upid) |>
+  filter(str_detect(zotu_id, "Zotu")) |>
+  select(zotu_id, status_final = final_status, status_ni = predict)
+
+# Load BLAST/IBIS predictions from Excel (manual curation)
+status_blast <- read.xlsx(here::here("data", "tax_invasive.xlsx"), sheet = "taxonomy")  |>
+  janitor::clean_names() |>
+  select(zotu_id, status_genus)
+
+# Combine and clean all nativeness assignments
+status <- status |>
+  left_join(status_blast, by = "zotu_id") |>
+  dplyr::rename(ibis_status = status_final) |>
+  # Convert blank strings to NA
+  mutate(across(c(ibis_status, status_ni, status_genus),
+                ~ ifelse(.x == "", NA_character_, .x))) |>
+  # Normalize case and rename columns for clarity
+  mutate(
+    Ibis      = tolower(ibis_status),
+    NiClassify= tolower(status_ni),
+    Blast     = tolower(status_genus),
+    zotu_id   = tolower(zotu_id)
+  ) |>
+  select(-contains("status"))  # drop original status columns
+```
+
+# Figure 4: ASV sharing among tree species
+
+```{r tree_presence}
+# 1. Filter metadata to samples from the co-occurring tree comparison (ʻŌhiʻa, Koa, Guava on Oʻahu)
+meta_leke <- meta_data |>
+  filter(tolower(island) == "oahu") |>
+  filter(str_detect(sample_id, "O_|K_|G_")) |>   # O = ʻŌhiʻa, K = Koa, G = Guava
+  select(sample_id, sample_site, commonname)
+
+# 2. Convert ZOTU table to long format, join tree metadata
+zotu_long <- zotu_df |>
+  inner_join(meta_leke, by = "sample_id") |>
+  pivot_longer(cols = starts_with("zotu"), names_to = "zotu", values_to = "count") |>
+  filter(count > 0) |>             # ← This is key
+  distinct(zotu, commonname) |>    # ← Ensure no duplicate combinations
+  mutate(present = TRUE)
+
+# 3. Build presence/absence matrix per tree species (commonname)
+zotu_presence <- zotu_long |>
+  pivot_wider(names_from = commonname, values_from = present, values_fill = FALSE) |>
+  inner_join(status |> select(zotu_id, NiClassify, Blast), by = c("zotu" = "zotu_id")) |>
+  mutate(
+    NiClassify = tolower(coalesce(NiClassify, "unknown")),
+    Blast      = tolower(coalesce(Blast,      "unknown")),
+    NiClassify = factor(NiClassify, levels = c("native", "introduced", "unknown")),
+    Blast      = factor(Blast,      levels = c("native", "introduced", "unknown")))
+```
+
+```{r tree_upset, warning=FALSE, message=FALSE, fig.width=6, fig.height=12}
+# Tree ASV intersections colored by NIClassify nativeness predictions
+
+
+# 4. Color palettes
+niclassify_colors <- c(native = "#377EB8", introduced = "#E41A1C", unknown = "grey70")
+
+# 5. Tree-specific colors
+plant_colors <- c(
+  "ʻōhiʻa Lehua"  = "#C1133D",   # ʻōhiʻa Lehua
+  "koa"   = "#8B4513",   # koa
+  "strawberry guava" = "gold"       # strawberry guava
+)
+
+# 6. NIClassify Upset with colored matrix
+ni_leke <- upset(
+  zotu_presence,
+  intersect = c("ʻōhiʻa Lehua", "koa", "strawberry guava"),
+  name = "Shared ASVs",
+  width_ratio = 0.15,
+
+  # Bottom matrix: colored by tree species
+  matrix = (
+    intersection_matrix(
+      geom = geom_point(shape = "circle filled", size = 3)
+    ) +
+    scale_color_manual(
+      values = plant_colors,
+      guide = guide_legend(override.aes = list(shape = 16, linetype = 0))
+    )
+  ),
+
+  # Queries: row highlight stripes
+  queries = list(
+    upset_query(set = "ʻōhiʻa Lehua",     fill = plant_colors[["ʻōhiʻa Lehua"]]),
+    upset_query(set = "koa",              fill = plant_colors[["koa"]]),
+    upset_query(set = "strawberry guava", fill = plant_colors[["strawberry guava"]])
+  ),
+
+  # Top barplot: colored by NIClassify with totals
+  base_annotations = list(
+    "Intersection size" = (
+      ggplot(mapping = aes(x = intersection, fill = NiClassify)) +
+        geom_bar(color = "black") +
+        geom_text(
+          aes(label = after_stat(count), group = 1),
+          stat = "count",
+          vjust = -0.4,
+          size = 4,
+          fontface = "bold",
+          color = "black"
+        ) +
+        scale_fill_manual(
+          values = niclassify_colors,
+          name   = "NIClassify",
+          breaks = c("native", "introduced", "unknown"),
+          drop   = FALSE
+        ) +
+        labs(x = NULL, y = "Summed ASVs") +
+        theme_minimal(base_size = 14) +
+        theme(
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = c(0.8, 0.85),
+          legend.justification = c(1, 1),
+          legend.background = element_rect(fill = alpha("white", 0.7), color = NA)
+        )
+    )
+  )
+)
+
+
+# 8. Save main UpSet figure
+
+save_fig(
+  tag = "F4_tree_comparison_niclassify",
+  plot = ni_leke,
+  which = "main",
+  prefix = "none",
+  width = 8,
+  height = 7,
+  dpi = 600
+)
+```
+
+# Figure S2: Comparison of status assignments
+
+```{r classifier_symmetry_test}
+paired_status <- zotu_presence |>
+  filter(!is.na(NiClassify), !is.na(Blast)) |>
+  select(zotu, NiClassify, Blast) |>
+  mutate(
+    NiClassify = factor(NiClassify, levels = c("native", "introduced", "unknown")),
+    Blast      = factor(Blast,      levels = c("native", "introduced", "unknown"))
+  )
+
+paired_long <- paired_status |>
+  pivot_longer(cols = c(NiClassify, Blast), names_to = "classifier", values_to = "status") |>
+  group_by(zotu) |>
+  filter(n_distinct(classifier) == 2) |>  # Each zotu must have both classifiers
+  ungroup() |>
+  mutate(
+    zotu       = factor(zotu),
+    classifier = factor(classifier, levels = c("NiClassify", "Blast")),
+    status     = factor(status, levels = c("native", "introduced", "unknown"))
+  )
+
+symm_test <- coin::symmetry_test(
+  status ~ classifier | zotu,
+  data = paired_long,
+  teststat = "quad",
+  distribution = "asymptotic"
+)
+
+symm_test
+```
+
+```{r classifier_confusion}
+# Calculate confusion matrix
+conf_mat <- zotu_presence |>
+  dplyr::count(NiClassify, Blast) |>
+  mutate(
+    NiClassify = factor(NiClassify, levels = c("native", "introduced", "unknown")),
+    Blast = factor(Blast, levels = c("native", "introduced", "unknown"))
+  )
+
+# Heatmap of the confusion matrix
+conf_mat_plot <- ggplot(conf_mat, aes(x = Blast, y = NiClassify, fill = n)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = n), fontface = "bold", size = 5, color = "black") +
+  scale_fill_gradient(low = "#ffffff", high = "#b2182b", name = "Count") +
+  labs(
+    x = "BLAST Status",
+    y = "NIClassify Status"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.title = element_text(face = "bold")
+  )
+
+conf_mat_plot
+
+save_fig(
+  tag = "S2_classifier_confusion",
+  plot = conf_mat_plot,
+  which = "supp",
+  prefix = "none",
+  width = 12,
+  height = 8,
+  dpi = 300
+)
+```
+
+# Figure S8: Native and introduced ASVs across elevation bands
+
+```{r elevation_status_presence}
+# Use the Jenks elevation bands supplied by 00_source.R
+ohia_meta <- meta_data %>%
+  filter(tolower(island) == "oahu",
+         !sample_id %in% c("KT1", "KA5"),
+         shortname == "Ohia") |>
+  distinct(sample_id, sample_site, elevation_m, elev_band)
+
+# Merge with ZOTUs and NIClassify status
+plot_meta <- zotu_df %>%
+  inner_join(ohia_meta, by = "sample_id") %>%
+  pivot_longer(-c("sample_id", "elev_band", "sample_site"), names_to = "zotu", values_to = "count") %>%
+  filter(count > 0) %>%
+  distinct(sample_id, zotu) %>%
+  left_join(status %>% select(zotu_id, NiClassify), by = c("zotu" = "zotu_id")) %>%
+  left_join(ohia_meta, by = "sample_id") %>%
+  mutate(
+    NiClassify = factor(
+      if_else(NiClassify == "introduced", "introduced", "native"),
+      levels = c("native", "introduced")
+    ),
+    elev_band = factor(elev_band, levels = c("Low", "Mid", "High"))
+  ) %>%
+  drop_na(NiClassify)
+```
+
+```{r elevation_status_plot}
+# Count number of unique samples per group
+sample_counts <- plot_meta %>%
+  distinct(sample_id, sample_site, elev_band) %>%
+  group_by(sample_site, elev_band) %>%
+  summarise(sample_n = n(), .groups = "drop")
+
+
+# Make short names for x-axis labels if needed
+elev_df <- plot_meta %>%
+  group_by(sample_site, elev_band, NiClassify) %>%
+  summarise(zotus = n_distinct(zotu), .groups = "drop") %>%
+  group_by(sample_site, elev_band) %>%
+  mutate(pct = zotus / sum(zotus)) %>%
+  ungroup() %>%
+  left_join(sample_counts, by = c("sample_site", "elev_band")) %>%
+  mutate(
+    x_label = paste0(sample_site, " ", elev_band, " (n=", sample_n, ")")
+  )
+
+# Explicit order for sites and elevation bands
+x_levels <- elev_df %>%
+  distinct(sample_site, elev_band, x_label) %>%
+  arrange(
+    factor(sample_site, levels = c("Kaʻala", "Schofield-Waikāne", "Poamoho", "Mānana", "ʻAiea")),
+    factor(elev_band, levels = c("low", "mid", "high"))
+  ) %>%
+  pull(x_label)
+
+elev_df <- elev_df %>%
+  mutate(x_label = factor(x_label, levels = x_levels))
+
+
+# Plot
+invasion_ele <-
+ggplot(elev_df, aes(x = x_label, y = pct, fill = NiClassify)) +
+  geom_col(width = 0.8, position = "stack", color = "black") +
+  scale_y_continuous(labels = percent_format(accuracy = 1), limits = c(0, 1), expand = c(0, 0)) +
+  scale_fill_manual(
+    values = c(native = "#377EB8", introduced = "#E41A1C"),
+    name   = "NIClassify Status"
+  ) +
+  labs(
+    x     = NULL,
+    y     = "Percent of ASVs"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+    panel.grid.minor.x = element_blank(),
+    plot.title = element_text(face = "bold"),
+    plot.background  = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA)
+)
+
+
+save_fig(
+  tag = "S8_elevation_invasion",
+  plot = invasion_ele,
+  which = "supp",
+  prefix = "none",
+  width = 12,
+  height = 8,
+  dpi = 300
+)
+```
+
+```{r elevation_status_gee}
+# Build summary: one row per sample_id × site × elevation band
+inv_by_sample <- plot_meta %>%
+  group_by(sample_site, sample_id, elev_band) %>%
+  summarise(
+    introduced = sum(NiClassify == "introduced"),
+    native     = sum(NiClassify == "native"),
+    .groups    = "drop"
+  )
+
+# Add ridge_id for clustering (1:5 for your ridges, order as in your plot)
+inv_by_sample <- inv_by_sample %>%
+  mutate(
+    ridge_id = as.numeric(factor(sample_site, levels = c("Kaʻala", "Schofield-Waikāne", "Poamoho", "Mānana", "ʻAiea")))
+  )
+
+gee2 <- geepack::geeglm(
+  cbind(introduced, native) ~ elev_band,
+  id = ridge_id,
+  data = inv_by_sample,
+  family = binomial,
+  corstr = "exchangeable"
+)
+summary(gee2)
+```
+
+# Figure S9: ASV sharing among ridges
+
+```{r ridge_upset}
+# Define your colors
+ridge_colors <- c(
+  "ʻAiea"             = "#E64B35FF",
+  "Kaʻala"            = "#4DBBD5FF",
+  "Mānana"            = "#00A087FF",
+  "Poamoho"           = "#3C5488FF",
+  "Schofield-Waikāne" = "#F39B7FFF"
+)
+
+
+zotu_presence <- plot_meta %>%
+  distinct(zotu, sample_site) %>%
+  mutate(present = TRUE) %>%
+  pivot_wider(names_from = sample_site, values_from = present, values_fill = FALSE) %>%
+  left_join(plot_meta %>% select(zotu, NiClassify) %>% distinct(), by = "zotu")
+
+fig04 <-
+upset(
+  zotu_presence,
+  intersect_sites <- c("Kaʻala", "Schofield-Waikāne", "Poamoho", "Mānana", "ʻAiea"),
+  name = "Shared ASVs",
+  width_ratio = 0.15,
+
+  # Bottom matrix: colored by ridge
+  matrix = (
+    intersection_matrix(
+      geom = geom_point(shape = "circle filled", size = 3)
+    ) +
+    scale_color_manual(
+      values = ridge_colors,
+      guide = guide_legend(override.aes = list(shape = 16, linetype = 0))
+    )
+  ),
+
+  # Queries: row highlight stripes
+   queries = list(
+    upset_query(set = "Kaʻala",              fill = ridge_colors[["Kaʻala"]]),
+    upset_query(set = "Schofield-Waikāne",  fill = ridge_colors[["Schofield-Waikāne"]]),
+    upset_query(set = "Poamoho",             fill = ridge_colors[["Poamoho"]]),
+    upset_query(set = "Mānana",              fill = ridge_colors[["Mānana"]]),
+    upset_query(set = "ʻAiea",               fill = ridge_colors[["ʻAiea"]])
+  ),
+
+  # Top barplot: colored by NIClassify with totals
+  base_annotations = list(
+    "Intersection size" = (
+      ggplot(mapping = aes(x = intersection, fill = NiClassify)) +
+        geom_bar(color = "black") +
+        geom_text(
+          aes(label = after_stat(count), group = 1),
+          stat = "count",
+          vjust = -0.4,
+          size = 3.5,
+          fontface = "bold",
+          color = "black"
+        ) +
+        scale_fill_manual(
+          values = niclassify_colors,
+          name   = "NIClassify",
+          breaks = c("native", "introduced", "unknown"),
+          drop   = FALSE
+        ) +
+        labs(x = NULL, y = "Number of ASVs") +
+        theme_minimal(base_size = 14) +
+        theme(
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = c(0.8, 0.85),
+          legend.justification = c(1, 1),
+          legend.background = element_rect(fill = alpha("white", 0.7), color = NA)
+        )
+    )
+  )
+)
+
+
+save_fig(
+  tag = "S9_ridge_restricted_asvs",
+  plot = fig04,
+  which = "supp",
+  prefix = "none",
+  width = 8,
+  height = 8,
+  dpi = 600
+)
+```
+
+# Figure 5: Introduced ASV proportions among tree species
+
+```{r tree_introduced_contrasts}
+# 1) Re-compute per-sample proportions (introduced out of all classified+unclassified)
+prop_df <- zotu_df %>%
+  pivot_longer(-sample_id, names_to="zotu", values_to="count") %>%
+  filter(count > 0) %>%
+  distinct(sample_id, zotu) %>%
+  left_join(
+    meta_data %>% select(sample_id, sample_site, shortname),
+    by = "sample_id"
+  ) %>%
+  filter(
+    sample_site %in% c("ʻAiea","Mānana"),
+    shortname   %in% c("Ohia","Koa","Guava")
+  ) %>%
+  left_join(
+    status %>% select(zotu_id, NiClassify) %>% rename(zotu = zotu_id),
+    by = "zotu"
+  ) %>%
+  mutate(
+    NiClassify = coalesce(NiClassify, "unclassified"),
+    NiClassify = factor(NiClassify, levels=c("native","introduced","unclassified"))
+  ) %>%
+  count(sample_id, sample_site, shortname, NiClassify) %>%
+  group_by(sample_id) %>%
+  mutate(total = sum(n)) %>%
+  ungroup() %>%
+  filter(NiClassify=="introduced") %>%
+  transmute(
+    sample_id,
+    sample_site,
+    tree        = recode(shortname,
+                         "Ohia"  = "ʻōhiʻa Lehua",
+                         "Koa"   = "koa",
+                         "Guava" = "strawberry guava"),
+    prop_intro = n / total
+  )
+
+# 2) Define the 3 pair-wise comparisons
+comparisons <- list(
+  c("ʻōhiʻa Lehua","koa"),
+  c("ʻōhiʻa Lehua","strawberry guava"),
+  c("koa","strawberry guava")
+)
+
+# 3) Build the bar + SE plot with significance stars
+fig04_tree_intro <- ggplot(prop_df, aes(x = tree, y = prop_intro, fill = tree)) +
+  geom_bar(stat="summary", fun="mean", width=0.7, color = "black") +
+  geom_errorbar(stat="summary", fun.data=mean_se, width=0.2) +
+  facet_wrap(~ sample_site, nrow = 1) +
+  scale_y_continuous(
+    labels = percent_format(accuracy=1),
+    limits = c(0,1), breaks = seq(0,1,0.2), expand = c(0,0)
+  ) +
+  scale_fill_manual(values = plant_colors) +
+  stat_compare_means(
+    aes(label = ..p.signif..),
+    method           = "t.test",
+    comparisons      = comparisons,
+    p.adjust.method  = "holm",
+    hide.ns          = FALSE,
+    tip.length       = 0.01
+  ) +
+  labs(
+    x        = "Tree species",
+    y        = "Mean % introduced ASVs ± SE",
+    fill     = "Tree"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x    = element_text(angle = 25, hjust = 1),
+    legend.position= "none",
+    strip.text     = element_text(face = "bold")
+  )
+
+save_fig(
+  tag = "F5_ohia_koa_guava_comparison",
+  plot = fig04_tree_intro,
+  which = "main",
+  prefix = "none",
+  width = 9,
+  height = 5,
+  dpi = 600
+)
+
+
+fig04_tree_intro
+```
