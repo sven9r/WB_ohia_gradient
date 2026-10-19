@@ -2,6 +2,8 @@
 
 Analysis code and processed ASV data for the accompanying study: arthropod communities along five Oʻahu ridges, with comparisons among ʻōhiʻa (*Metrosideros polymorpha*), koa (*Acacia koa*) and strawberry guava (*Psidium cattleyanum*) at ʻAiea and Mānana. Native/introduced classifications describe biogeographic origin in the Hawaiian archipelago.
 
+**Raw FASTA sequence data:** download `raw_files.zip` from [Dryad (10.5061/dryad.2z34tmq09)](https://doi.org/10.5061/dryad.2z34tmq09).
+
 ## Analysis files
 
 | File in `scripts/` | Analysis and manuscript outputs |
